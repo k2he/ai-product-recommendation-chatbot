@@ -1,0 +1,64 @@
+[project]
+name = "product-recommendation-chatbot"
+version = "1.0.0"
+description = "AI-powered product recommendation chatbot with RAG"
+authors = [
+    {name = "Your Name", email = "your.email@example.com"}
+]
+requires-python = ">=3.11"
+dependencies = [
+    "fastapi>=0.109.0",
+    "uvicorn[standard]>=0.27.0",
+    "pydantic>=2.5.0",
+    "pydantic-settings>=2.1.0",
+    "python-multipart>=0.0.6",
+    "langchain>=0.1.0",
+    "langchain-community>=0.0.10",
+    "langsmith>=0.1.0",
+    "pinecone-client>=3.0.0",
+    "pymongo>=4.6.0",
+    "motor>=3.3.0",
+    "python-dotenv>=1.0.0",
+    "httpx>=0.26.0",
+    "tavily-python>=0.3.0",
+    "ollama>=0.1.0",
+    "tenacity>=8.2.3",
+    "python-json-logger>=2.0.7",
+    "pydantic[email]>=2.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-asyncio>=0.21.0",
+    "pytest-cov>=4.1.0",
+    "black>=23.12.0",
+    "ruff>=0.1.0",
+    "mypy>=1.7.0",
+    "httpx>=0.26.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.black]
+line-length = 100
+target-version = ['py311']
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]

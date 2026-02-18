@@ -1,0 +1,11 @@
+/backend/app/__pycache__
+/backend/app/api/__pycache__
+/backend/.idea
+/backend/app/database/__pycache__
+/backend/app/models/__pycache__
+/backend/app/services/__pycache__
+/backend/app/utils/__pycache__
+/frontend/node_modules/.bin
+/frontend/node_modules/.vite/deps
+/frontend/node_modules/@alloc
+/frontend/node_modules

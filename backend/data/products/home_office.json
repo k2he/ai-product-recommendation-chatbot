@@ -1,0 +1,87 @@
+[
+  {
+    "product_id": "prod_006",
+    "name": "Smart Home Security Camera System",
+    "description": "Complete home security system with 4 HD cameras, night vision, motion detection, and cloud storage. Easy smartphone monitoring.",
+    "category": "Smart Home",
+    "price": 349.99,
+    "specifications": {
+      "cameras": "4x 1080p HD",
+      "night_vision": "Up to 30 feet",
+      "storage": "Cloud + Local SD",
+      "connectivity": "Wi-Fi 2.4/5GHz",
+      "app_compatibility": "iOS and Android"
+    },
+    "image_url": "https://images.unsplash.com/photo-1558002038-1055907df827",
+    "stock": 22,
+    "tags": ["security", "smart-home", "camera", "surveillance", "wifi"]
+  },
+  {
+    "product_id": "prod_007",
+    "name": "Portable Laptop Stand Aluminum",
+    "description": "Lightweight and adjustable aluminum laptop stand with ventilation design. Perfect for remote work and improved ergonomics.",
+    "category": "Accessories",
+    "price": 49.99,
+    "specifications": {
+      "material": "Aluminum alloy",
+      "weight": "800g",
+      "compatibility": "10-17 inch laptops",
+      "adjustable_height": "6 levels",
+      "foldable": "Yes"
+    },
+    "image_url": "https://images.unsplash.com/photo-1527864550417-7fd91fc51a46",
+    "stock": 67,
+    "tags": ["laptop", "stand", "ergonomic", "portable", "aluminum"]
+  },
+  {
+    "product_id": "prod_008",
+    "name": "Wireless Charging Pad Fast Charge",
+    "description": "Universal wireless charging pad with 15W fast charging support. Compatible with all Qi-enabled devices.",
+    "category": "Accessories",
+    "price": 34.99,
+    "specifications": {
+      "charging_speed": "15W max",
+      "compatibility": "Qi-enabled devices",
+      "safety_features": "Overcharge protection",
+      "indicator": "LED status light",
+      "cable_included": "USB-C cable"
+    },
+    "image_url": "https://images.unsplash.com/photo-1591290619762-aa192e3e71b1",
+    "stock": 89,
+    "tags": ["wireless", "charging", "fast-charge", "qi", "phone-accessory"]
+  },
+  {
+    "product_id": "prod_009",
+    "name": "Standing Desk Converter",
+    "description": "Height-adjustable standing desk converter with spacious work surface and keyboard tray. No assembly required.",
+    "category": "Furniture",
+    "price": 299.99,
+    "specifications": {
+      "desk_size": "32\" x 22\"",
+      "height_range": "6.5\" to 19.7\"",
+      "weight_capacity": "35 lbs",
+      "adjustment": "Gas spring",
+      "color": "Black"
+    },
+    "image_url": "https://images.unsplash.com/photo-1611269154421-4e27233ac5c7",
+    "stock": 15,
+    "tags": ["standing-desk", "ergonomic", "furniture", "height-adjustable", "office"]
+  },
+  {
+    "product_id": "prod_010",
+    "name": "Noise Cancelling Earbuds Pro",
+    "description": "Premium true wireless earbuds with adaptive noise cancellation, transparency mode, and 30-hour total battery life.",
+    "category": "Electronics",
+    "price": 199.99,
+    "specifications": {
+      "battery_life": "8hrs earbuds + 22hrs case",
+      "noise_cancellation": "Adaptive ANC",
+      "water_resistance": "IPX4",
+      "connectivity": "Bluetooth 5.3",
+      "controls": "Touch controls"
+    },
+    "image_url": "https://images.unsplash.com/photo-1590658268037-6bf12165a8df",
+    "stock": 41,
+    "tags": ["earbuds", "wireless", "noise-cancellation", "bluetooth", "waterproof"]
+  }
+]

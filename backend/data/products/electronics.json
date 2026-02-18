@@ -1,0 +1,88 @@
+[
+  {
+    "product_id": "prod_001",
+    "name": "Wireless Bluetooth Headphones Pro",
+    "description": "Premium wireless headphones with active noise cancellation, 40-hour battery life, and studio-quality sound. Perfect for music lovers and professionals.",
+    "category": "Electronics",
+    "price": 149.99,
+    "specifications": {
+      "color": "Matte Black",
+      "battery_life": "40 hours",
+      "connectivity": "Bluetooth 5.2",
+      "noise_cancellation": "Active ANC",
+      "weight": "250g",
+      "driver_size": "40mm"
+    },
+    "image_url": "https://images.unsplash.com/photo-1505740420928-5e560c06d30e",
+    "stock": 45,
+    "tags": ["bluetooth", "wireless", "noise-cancellation", "audio", "headphones"]
+  },
+  {
+    "product_id": "prod_002",
+    "name": "Smart Fitness Watch Ultra",
+    "description": "Advanced fitness tracker with heart rate monitoring, GPS, sleep tracking, and 100+ workout modes. Water resistant up to 50m.",
+    "category": "Wearables",
+    "price": 299.99,
+    "specifications": {
+      "display": "1.4\" AMOLED",
+      "battery_life": "14 days",
+      "water_resistance": "50m",
+      "sensors": "Heart rate, GPS, SpO2, Gyroscope",
+      "compatibility": "iOS and Android"
+    },
+    "image_url": "https://images.unsplash.com/photo-1508685096489-7aacd43bd3b1",
+    "stock": 32,
+    "tags": ["fitness", "smartwatch", "health", "gps", "waterproof"]
+  },
+  {
+    "product_id": "prod_003",
+    "name": "Ergonomic Office Chair Premium",
+    "description": "Professional ergonomic chair with lumbar support, adjustable armrests, and breathable mesh back. Designed for all-day comfort.",
+    "category": "Furniture",
+    "price": 399.99,
+    "specifications": {
+      "material": "Mesh and Leather",
+      "weight_capacity": "300 lbs",
+      "adjustments": "Height, tilt, armrests, lumbar",
+      "warranty": "5 years",
+      "color_options": "Black, Gray, Blue"
+    },
+    "image_url": "https://images.unsplash.com/photo-1580480055273-228ff5388ef8",
+    "stock": 18,
+    "tags": ["office", "ergonomic", "furniture", "chair", "work-from-home"]
+  },
+  {
+    "product_id": "prod_004",
+    "name": "4K Ultra HD Webcam",
+    "description": "Professional webcam with 4K resolution, autofocus, and built-in noise-canceling microphones. Ideal for video conferencing and streaming.",
+    "category": "Electronics",
+    "price": 129.99,
+    "specifications": {
+      "resolution": "4K 30fps / 1080p 60fps",
+      "field_of_view": "90 degrees",
+      "autofocus": "Yes",
+      "microphone": "Dual noise-canceling",
+      "connection": "USB-C"
+    },
+    "image_url": "https://images.unsplash.com/photo-1587202372583-49330a15584d",
+    "stock": 55,
+    "tags": ["webcam", "4k", "video-conference", "streaming", "work-from-home"]
+  },
+  {
+    "product_id": "prod_005",
+    "name": "Mechanical Gaming Keyboard RGB",
+    "description": "Premium mechanical keyboard with customizable RGB lighting, tactile switches, and programmable keys. Built for gaming and productivity.",
+    "category": "Electronics",
+    "price": 179.99,
+    "specifications": {
+      "switch_type": "Cherry MX Red",
+      "lighting": "Per-key RGB",
+      "connectivity": "Wired USB / Wireless 2.4GHz",
+      "battery_life": "40 hours wireless",
+      "keycaps": "Double-shot PBT"
+    },
+    "image_url": "https://images.unsplash.com/photo-1595225476474-87563907a212",
+    "stock": 28,
+    "tags": ["keyboard", "mechanical", "gaming", "rgb", "wireless"]
+  }
+]
