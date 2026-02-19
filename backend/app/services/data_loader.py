@@ -58,11 +58,12 @@ class DataLoader:
         """Transform a raw BestBuy product record into ProductBase-compatible dict.
 
         Extracts only: sku, name, shortDescription, customerRating, productUrl,
-        regularPrice, salePrice, categoryName, and derives isOnSale.
+        regularPrice, salePrice, categoryName, highResImage, and derives isOnSale.
         """
-        # Derive isOnSale: saleEndDate is non-null means it's on sale
-        sale_end_date = raw.get("saleEndDate")
-        is_on_sale = sale_end_date is not None
+
+        regular_price = float(raw.get("regularPrice", 0.0))
+        sale_price = float(raw.get("salePrice", raw.get("regularPrice", 0.0)))
+        is_on_sale = sale_price != regular_price
 
         # Prefix productUrl with BestBuy base URL if it's a relative path
         product_url = raw.get("productUrl", "")
@@ -75,10 +76,11 @@ class DataLoader:
             "shortDescription": raw.get("shortDescription", ""),
             "customerRating": raw.get("customerRating"),
             "productUrl": product_url,
-            "regularPrice": float(raw.get("regularPrice", 0.0)),
-            "salePrice": float(raw.get("salePrice", raw.get("regularPrice", 0.0))),
+            "regularPrice": regular_price,
+            "salePrice": sale_price,
             "categoryName": raw.get("categoryName", ""),
             "isOnSale": is_on_sale,
+            "highResImage": raw.get("highResImage") or None,
         }
 
     @staticmethod

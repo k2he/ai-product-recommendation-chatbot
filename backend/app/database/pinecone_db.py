@@ -3,6 +3,8 @@
 import logging
 from typing import Any, Optional
 
+from langchain.chains.query_constructor.base import AttributeInfo
+from langchain.retrievers.self_query.base import SelfQueryRetriever
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
@@ -13,25 +15,64 @@ from app.models.product import Product, ProductBase, ProductDocument
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+# ── Static metadata field definitions for SelfQueryingRetriever ───────────────
+# categoryName is omitted here — it is built dynamically in build_sqr()
+# because its allowed values come from categories.json at runtime.
+_STATIC_METADATA_FIELDS = [
+    AttributeInfo(
+        name="salePrice",
+        description=(
+            "Current selling price of the product in CAD. "
+            "Use for queries like 'under $500', 'less than 200 dollars', 'over $1000'."
+        ),
+        type="float",
+    ),
+    AttributeInfo(
+        name="regularPrice",
+        description="Original non-sale price of the product in CAD.",
+        type="float",
+    ),
+    AttributeInfo(
+        name="customerRating",
+        description=(
+            "Average customer rating from 0 to 5. "
+            "Use for queries like 'highly rated', '4 stars or more', 'top rated'."
+        ),
+        type="float",
+    ),
+    AttributeInfo(
+        name="isOnSale",
+        description=(
+            "Boolean — true if the product currently has an active sale. "
+            "Use for queries like 'on sale', 'discounted', 'deals'."
+        ),
+        type="boolean",
+    ),
+]
+
+_DOCUMENT_CONTENT_DESCRIPTION = (
+    "Product name and short description."
+    "Contains product type, brand, key features, and specifications."
+)
+
 
 class PineconeDB:
     """Pinecone vector database manager."""
 
     def __init__(self) -> None:
-        """Initialize Pinecone connection."""
         self.client: Optional[Pinecone] = None
         self.index = None
         self.embeddings: Optional[OllamaEmbeddings] = None
         self.vectorstore: Optional[PineconeVectorStore] = None
 
     async def connect(self) -> None:
-        """Connect to Pinecone and initialize index."""
+        """Connect to Pinecone and initialise the vectorstore."""
         try:
             self.client = Pinecone(api_key=settings.pinecone_api_key)
 
             self.embeddings = OllamaEmbeddings(
                 base_url=settings.ollama_base_url,
-                model=settings.ollama_embedding_model
+                model=settings.ollama_embedding_model,
             )
 
             existing_indexes = [idx.name for idx in self.client.list_indexes()]
@@ -40,7 +81,7 @@ class PineconeDB:
                 desc = self.client.describe_index(settings.pinecone_index_name)
                 if desc.dimension != settings.pinecone_dimension:
                     logger.warning(
-                        f"Dimension mismatch! Deleting index {settings.pinecone_index_name}"
+                        f"Dimension mismatch — deleting index: {settings.pinecone_index_name}"
                     )
                     self.client.delete_index(settings.pinecone_index_name)
                     existing_indexes.remove(settings.pinecone_index_name)
@@ -62,7 +103,6 @@ class PineconeDB:
             )
 
             self.index = self.client.Index(settings.pinecone_index_name)
-
             logger.info(f"Connected to Pinecone index: {settings.pinecone_index_name}")
 
         except Exception as e:
@@ -70,106 +110,102 @@ class PineconeDB:
             raise
 
     async def disconnect(self) -> None:
-        """Disconnect from Pinecone."""
         logger.info("Pinecone connection closed")
 
-    async def add_products(self, products: list[ProductBase]) -> None:
-        """Add products to vector database."""
+    # ── Self-Querying Retriever factory ────────────────────────────────────────
+
+    def build_sqr(self, llm: Any, categories: list[str]) -> SelfQueryRetriever:
+        """Build a SelfQueryingRetriever wired to this Pinecone vectorstore.
+
+        SQR replaces both the rephrase chain and the manual metadata filter
+        construction. Given a raw natural language query it:
+          1. Calls the LLM once to decompose the query into a semantic search
+             string + a structured filter expression (LangChain query language).
+          2. Translates that filter automatically into Pinecone filter syntax.
+          3. Runs the vector search with the filter applied in one round trip.
+
+        This method is called once during ChatbotService.__init__(), after
+        Pinecone has connected and categories.json has been loaded.
+
+        Args:
+            llm:        Any LangChain-compatible LLM (ChatOllama in production).
+            categories: List of unique categoryName strings from categories.json.
+                        Injected into the AttributeInfo description so the LLM
+                        knows exactly which values are valid to filter on.
+
+        Returns:
+            Configured SelfQueryingRetriever instance.
+        """
         if not self.vectorstore:
-            raise ConnectionError("Vectorstore not initialized")
+            raise ConnectionError("Vectorstore not initialised — call connect() first.")
 
+        # Build the dynamic categoryName field using the loaded category list
+        category_values = ", ".join(f'"{c}"' for c in categories)
+        category_field = AttributeInfo(
+            name="categoryName",
+            description=(
+                f"Product category. Only filter using exact values from this list: "
+                f"{category_values}. "
+                "Use when the user mentions a product type like 'laptop', 'headphones', "
+                "'earbuds', 'MacBook Air', etc."
+            ),
+            type="string",
+        )
+
+        metadata_field_info = _STATIC_METADATA_FIELDS + [category_field]
+
+        retriever = SelfQueryRetriever.from_llm(
+            llm=llm,
+            vectorstore=self.vectorstore,
+            document_contents=_DOCUMENT_CONTENT_DESCRIPTION,
+            metadata_field_info=metadata_field_info,
+            search_kwargs={"k": settings.vector_search_top_k},
+            # When SQR cannot parse a filter it falls back to unfiltered search
+            enable_limit=False,
+            verbose=True,
+        )
+
+        logger.info(
+            f"SelfQueryingRetriever built — "
+            f"{len(metadata_field_info)} metadata fields, "
+            f"{len(categories)} categories."
+        )
+        return retriever
+
+    # ── Product ingestion ──────────────────────────────────────────────────────
+
+    async def add_products(self, products: list[ProductBase]) -> None:
+        """Embed and upsert products into Pinecone."""
+        if not self.vectorstore:
+            raise ConnectionError("Vectorstore not initialised.")
         try:
-            documents = [ProductDocument.from_product(product) for product in products]
-            texts = [doc.text for doc in documents]
-            metadatas = [doc.metadata for doc in documents]
-            ids = [doc.product_id for doc in documents]
-
-            self.vectorstore.add_texts(texts=texts, metadatas=metadatas, ids=ids)
-
+            documents = [ProductDocument.from_product(p) for p in products]
+            self.vectorstore.add_texts(
+                texts=[d.text for d in documents],
+                metadatas=[d.metadata for d in documents],
+                ids=[d.product_id for d in documents],
+            )
             logger.info(f"Added {len(products)} products to Pinecone")
-
         except Exception as e:
             logger.error(f"Failed to add products to Pinecone: {e}")
             raise
 
-    async def search_products(
-        self,
-        query: str,
-        top_k: int = 5,
-        threshold: float = 0.5,
-        metadata_filter: Optional[dict[str, Any]] = None,
-    ) -> list[Product]:
-        """Search for products using similarity search with optional metadata filtering.
-
-        Args:
-            query: Semantic search query string.
-            top_k: Maximum number of results to return.
-            threshold: Minimum similarity score (0-1) to include a result.
-            metadata_filter: Optional Pinecone filter dict, e.g.:
-                { "categoryName": { "$in": ["Laptops"] }, "salePrice": { "$lte": 1000 } }
-        """
-        if not self.vectorstore:
-            raise ConnectionError("Vectorstore not initialized")
-
-        try:
-            search_kwargs: dict[str, Any] = {"k": top_k}
-            if metadata_filter:
-                search_kwargs["filter"] = metadata_filter
-                logger.info(f"Applying metadata filter: {metadata_filter}")
-
-            results = self.vectorstore.similarity_search_with_score(
-                query, **search_kwargs
-            )
-
-            products = []
-            for doc, score in results:
-                if score < threshold:
-                    logger.debug(f"Skipping product with low score {score:.3f}")
-                    continue
-
-                meta = doc.metadata
-                try:
-                    product = Product(
-                        sku=meta.get("sku", meta.get("product_id", "")),
-                        name=meta.get("name", ""),
-                        shortDescription=meta.get("shortDescription", doc.page_content),
-                        customerRating=meta.get("customerRating"),
-                        productUrl=meta.get("productUrl", ""),
-                        regularPrice=float(meta.get("regularPrice", 0.0)),
-                        salePrice=float(meta.get("salePrice", 0.0)),
-                        categoryName=meta.get("categoryName", ""),
-                        isOnSale=bool(meta.get("isOnSale", False)),
-                        relevance_score=float(score),
-                    )
-                    products.append(product)
-                except Exception as e:
-                    logger.warning(f"Failed to parse product from metadata: {e}")
-                    continue
-
-            logger.info(f"Found {len(products)} products matching query")
-            return products
-
-        except Exception as e:
-            logger.error(f"Failed to search products: {e}")
-            raise
+    # ── Point lookup ───────────────────────────────────────────────────────────
 
     async def get_product_by_id(self, product_id: str) -> Optional[Product]:
-        """Fetch a single product by its SKU/ID from Pinecone."""
-        if not self.vectorstore:
-            raise ConnectionError("Vectorstore not initialized")
-
+        """Fetch a single product by SKU directly from the Pinecone index."""
+        if not self.index:
+            raise ConnectionError("Index not initialised.")
         try:
             fetch_response = self.index.fetch(
                 ids=[product_id], namespace=settings.pinecone_namespace
             )
             vectors = fetch_response.vectors
             if product_id not in vectors:
-                logger.info(f"Product ID '{product_id}' not found in Pinecone")
+                logger.info(f"Product '{product_id}' not found in Pinecone")
                 return None
 
-            data = vectors[product_id]
-            meta = data.metadata if hasattr(data, "metadata") else {}
-
+            meta = vectors[product_id].metadata or {}
             return Product(
                 sku=meta.get("sku", meta.get("product_id", "")),
                 name=meta.get("name", ""),
@@ -180,17 +216,17 @@ class PineconeDB:
                 salePrice=float(meta.get("salePrice", 0.0)),
                 categoryName=meta.get("categoryName", ""),
                 isOnSale=bool(meta.get("isOnSale", False)),
+                highResImage=meta.get("highResImage") or None,
             )
-
         except Exception as e:
             logger.error(f"Failed to fetch product by ID: {e}")
             return None
 
-    async def delete_products(self, product_ids: list[str]) -> None:
-        """Delete products from vector database."""
-        if not self.index:
-            raise ConnectionError("Index not initialized")
+    # ── Admin helpers ──────────────────────────────────────────────────────────
 
+    async def delete_products(self, product_ids: list[str]) -> None:
+        if not self.index:
+            raise ConnectionError("Index not initialised.")
         try:
             self.index.delete(ids=product_ids, namespace=settings.pinecone_namespace)
             logger.info(f"Deleted {len(product_ids)} products from Pinecone")
@@ -199,10 +235,8 @@ class PineconeDB:
             raise
 
     async def clear_index(self) -> None:
-        """Clear all vectors from the index."""
         if not self.index:
-            raise ConnectionError("Index not initialized")
-
+            raise ConnectionError("Index not initialised.")
         try:
             self.index.delete(delete_all=True, namespace=settings.pinecone_namespace)
             logger.info("Cleared all products from Pinecone index")
@@ -211,10 +245,8 @@ class PineconeDB:
             raise
 
     async def get_stats(self) -> dict[str, Any]:
-        """Get index statistics."""
         if not self.index:
-            raise ConnectionError("Index not initialized")
-
+            raise ConnectionError("Index not initialised.")
         try:
             stats = self.index.describe_index_stats()
             return {

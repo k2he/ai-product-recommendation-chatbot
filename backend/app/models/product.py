@@ -17,6 +17,7 @@ class ProductBase(BaseModel):
     salePrice: float = Field(..., ge=0, description="Current sale or regular price in CAD")
     categoryName: str = Field(..., min_length=1, max_length=200)
     isOnSale: bool = Field(..., description="True if product currently has an active sale end date")
+    highResImage: Optional[str] = Field(None, description="High resolution product image URL")
 
 
 class Product(ProductBase):
@@ -40,6 +41,7 @@ class Product(ProductBase):
                 "salePrice": 149.99,
                 "categoryName": "Wireless Earbuds & Earphones",
                 "isOnSale": True,
+                "highResImage": "https://multimedia.bbycastatic.ca/multimedia/products/1500x1500/184/18470/18470962.jpg",
                 "relevance_score": 0.95,
             }
         }
@@ -69,6 +71,7 @@ class ProductDocument(BaseModel):
             "salePrice": product.salePrice,
             "categoryName": product.categoryName,
             "isOnSale": product.isOnSale,
+            "highResImage": product.highResImage or "",
         }
 
         return cls(product_id=product.sku, text=text, metadata=metadata)

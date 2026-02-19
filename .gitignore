@@ -9,3 +9,5 @@
 /frontend/node_modules/.vite/deps
 /frontend/node_modules/@alloc
 /frontend/node_modules
+.DS_Store
+.DS_Store

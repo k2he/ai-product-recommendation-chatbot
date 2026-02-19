@@ -1,8 +1,14 @@
 """Product data loading script.
 
 Loads BestBuy-format JSON files from backend/data/products/ into Pinecone.
-Saves all unique categoryName values to backend/data/categories.json for use
-in metadata filtering at query time.
+
+After loading it writes backend/data/categories.json which contains the list
+of unique categoryName values. This file serves two purposes:
+  1. It is read at runtime by ChatbotService._load_categories() to build the
+     SelfQueryingRetriever's dynamic AttributeInfo for the categoryName field.
+  2. It gives operators a quick audit of what categories are in the index.
+
+Re-run this script whenever product JSON files are added or changed.
 """
 
 import asyncio
@@ -14,7 +20,6 @@ from app.database.pinecone_db import pinecone_db
 from app.services.data_loader import DataLoader
 from app.utils.logger import setup_logging
 
-# Setup logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
@@ -24,17 +29,13 @@ async def load_products():
     try:
         logger.info("Starting product data loading...")
 
-        # Connect to Pinecone
         await pinecone_db.connect()
 
-        # Get products directory
         data_dir = Path(__file__).parent.parent / "data" / "products"
-
         if not data_dir.exists():
             logger.error(f"Products directory not found: {data_dir}")
             return
 
-        # Load and transform products from directory
         logger.info(f"Loading products from: {data_dir}")
         products = await DataLoader.load_products_from_directory(data_dir)
 
@@ -44,7 +45,10 @@ async def load_products():
 
         logger.info(f"Loaded {len(products)} products from JSON files")
 
-        # ── Step 2: Extract and save unique categories ──────────────────────
+        # ── Save unique categories ─────────────────────────────────────────────
+        # categories.json is consumed by ChatbotService at startup to build the
+        # SelfQueryingRetriever's categoryName AttributeInfo description.
+        # Always regenerate it here so SQR stays in sync with the index.
         categories = DataLoader.extract_unique_categories(products)
         categories_file = Path(__file__).parent.parent / "data" / "categories.json"
         categories_file.parent.mkdir(parents=True, exist_ok=True)
@@ -54,8 +58,12 @@ async def load_products():
 
         logger.info(f"Saved {len(categories)} unique categories to {categories_file}")
         logger.info(f"Categories: {categories}")
+        logger.info(
+            "SelfQueryingRetriever will use these categories as allowed filter values "
+            "when the application next starts."
+        )
 
-        # ── Step 3: Load into Pinecone ───────────────────────────────────────
+        # ── Upsert into Pinecone ───────────────────────────────────────────────
         clear_existing = input("Clear existing products in Pinecone? (y/n): ").lower()
         if clear_existing == "y":
             logger.info("Clearing existing products...")
@@ -64,16 +72,13 @@ async def load_products():
         logger.info("Adding products to Pinecone...")
         await pinecone_db.add_products(products)
 
-        # Stats
         stats = await pinecone_db.get_stats()
         logger.info(f"Pinecone stats: {stats}")
-
         logger.info("Product loading completed successfully!")
 
     except Exception as e:
         logger.error(f"Error loading products: {e}")
         raise
-
     finally:
         await pinecone_db.disconnect()
 

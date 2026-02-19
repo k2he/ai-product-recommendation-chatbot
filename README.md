@@ -8,8 +8,8 @@ A production-ready AI-powered chatbot that recommends BestBuy Canada products ba
 
 - **Smart Intent Detection** — LLM classifies every message as search, email, or purchase before any search is performed
 - **Intelligent Product Search** — Pinecone vector similarity search over BestBuy Canada catalogue data
-- **Metadata Filtering** — LLM extracts category, price range, sale status, and rating filters from natural language and applies them at search time
-- **Query Rephrasing** — Automatically optimises user queries for better semantic recall
+- **Self-Querying Retriever (SQR)** — Single LangChain component that decomposes a natural language query into a semantic search string **and** a structured Pinecone metadata filter in one LLM call — no manual JSON parsing or separate rephrase step
+- **Metadata Filtering** — Filters on `categoryName`, `salePrice`, `customerRating`, and `isOnSale` are built automatically by SQR and applied natively in Pinecone
 - **User Management** — MongoDB-based user profiles (name, email) used in responses and actions
 - **Web Search Fallback** — Tavily integration when products aren't found in the database
 - **Email & Purchase Actions** — Triggered by UI buttons or free-text (e.g. "send it to my email")
@@ -27,7 +27,7 @@ A production-ready AI-powered chatbot that recommends BestBuy Canada products ba
 | Technology | Role |
 |---|---|
 | FastAPI (Python 3.11+) | REST API framework |
-| LangChain | Three-chain AI workflow |
+| LangChain | AI workflow: intent_chain, SelfQueryingRetriever, response_chain |
 | Ollama (`gpt-oss:20b` + `nomic-embed-text`) | Local LLM inference & embeddings |
 | Pinecone | Vector database with metadata filtering |
 | MongoDB | User profile storage |
@@ -74,13 +74,16 @@ A production-ready AI-powered chatbot that recommends BestBuy Canada products ba
 │  │    ┌────┴────────────┐              │   │
 │  │    │ email/purchase  │  search      │   │
 │  │    ▼                 ▼              │   │
-│  │  execute_action  rephrase_chain     │   │
-│  │  (skip search)   + filter (LLM)    │   │
+│  │  execute_action  SelfQueryingRetriever   │
+│  │  (skip search)   (Steps 1+3 merged) │   │
+│  │                  ├─ LLM decomposes  │   │
+│  │                  │  query → string  │   │
+│  │                  │  + filter dict   │   │
+│  │                  └─ Pinecone search │   │
+│  │                     with filter     │   │
 │  │                      │             │   │
 │  │                  MongoDB (user)     │   │
 │  │                      │             │   │
-│  │                  Pinecone search    │   │
-│  │                  + metadata filter  │   │
 │  │                      │             │   │
 │  │                  [no results?]      │   │
 │  │                  Tavily fallback    │   │
@@ -110,31 +113,24 @@ Step 0 ── intent_chain (LLM)
           Output: { "intent": "search", "product_hint": null }
                 │
                 ▼ (intent = "search")
-Step 1 ── rephrase_chain (LLM)
-          Output: {
-            "rephrased": "laptop sale discount under 1500",
-            "filter": {
-              "categoryName": { "$in": ["Laptops"] },
-              "salePrice":    { "$lte": 1500 },
-              "isOnSale":     true
-            }
-          }
-                │
-                ▼
 Step 2 ── MongoDB → fetch user (name, email)
                 │
                 ▼
-Step 3 ── Pinecone similarity search
-          Query:  "laptop sale discount under 1500"
-          Filter: categoryName IN [Laptops], salePrice ≤ 1500, isOnSale = true
+Steps  ── SelfQueryingRetriever (single LLM call — replaces Steps 1 + 3)
+1 + 3     ┌─ LLM decomposes query into:
+          │    semantic string: "laptop sale discount under 1500"
+          │    filter: {
+          │      "categoryName": { "$eq": "Laptops" },
+          │      "salePrice":    { "$lte": 1500 },
+          │      "isOnSale":     { "$eq": true }
+          │    }
+          └─ Pinecone similarity search with filter applied natively
                 │
           ┌─────┴──────────┐
           │ results found? │
           └─────┬──────────┘
        yes      │       no
-          │     │     │
-          │     │   Step 4 ── Tavily web search fallback
-          │     │
+                │     Step 4 ── Tavily web search fallback
                 ▼
 Step 5 ── response_chain (LLM)
           Generates friendly response + mandatory CTA:
@@ -215,7 +211,7 @@ After loading, all unique `categoryName` values are saved to `backend/data/categ
 }
 ```
 
-This file is read at runtime by the rephrase chain to populate the list of filterable categories.
+This file is read at startup by `ChatbotService._load_categories()` and injected into the `SelfQueryingRetriever`'s `AttributeInfo` description for `categoryName`, so the LLM inside SQR knows exactly which values are valid to filter on. Re-run `load_products.py` whenever the product catalogue changes to keep this in sync.
 
 ---
 
@@ -359,9 +355,9 @@ product-recommendation-chatbot/
 │   │   │   └── user.py
 │   │   ├── database/
 │   │   │   ├── mongodb.py
-│   │   │   └── pinecone_db.py      # search_products() with metadata_filter param
+│   │   │   └── pinecone_db.py      # build_sqr() factory, add_products, get_product_by_id
 │   │   ├── services/
-│   │   │   ├── chatbot_service.py  # intent_chain, rephrase_chain, response_chain
+│   │   │   ├── chatbot_service.py  # intent_chain, SQR (_run_sqr), response_chain
 │   │   │   ├── data_loader.py      # BestBuy format support + category extraction
 │   │   │   ├── email_service.py
 │   │   │   └── user_service.py
@@ -398,17 +394,20 @@ Every chain execution is automatically traced. View at https://smith.langchain.c
 **Trace structure per request:**
 ```
 User query: "email me the MacBook"
-├─ intent_chain      → { intent: "email", product_hint: "MacBook" }  (0.8s)
+├─ intent_chain            → { intent: "email", product_hint: "MacBook" }  (0.8s)
 │
-└─ execute_action    → email sent to kai@example.com                  (0.3s)
+└─ execute_action          → email sent to kai@example.com                  (0.3s)
 
 ─────────────────────────────────────────────────────
 User query: "laptops on sale under $2000"
-├─ intent_chain      → { intent: "search" }                          (0.7s)
-├─ rephrase_chain    → { rephrased: "...", filter: {...} }            (1.1s)
-├─ MongoDB           → user: Kai He                                   (0.1s)
-├─ Pinecone search   → 4 products (with filter)                       (0.6s)
-└─ response_chain    → friendly message + CTA                         (2.0s)
+├─ intent_chain            → { intent: "search" }                           (0.7s)
+├─ MongoDB                 → user: Kai He                                    (0.1s)
+├─ SelfQueryingRetriever   → LLM decomposes query + filter                  (1.1s)
+│  ├─ semantic string:       "laptop sale discount"
+│  ├─ filter:                { categoryName: "Laptops", salePrice: ≤2000,
+│  │                           isOnSale: true }
+│  └─ Pinecone search:       4 products returned                            (0.6s)
+└─ response_chain          → friendly message + CTA                         (2.0s)
 ```
 
 ---
@@ -418,7 +417,12 @@ User query: "laptops on sale under $2000"
 **No products returned despite correct query:**
 - Check `categories.json` exists in `backend/data/` — if missing, re-run `load_products.py`
 - Verify Pinecone index has vectors: check `/api/v1/health` and Pinecone dashboard
-- Lower `SEARCH_THRESHOLD` in `.env` (default 0.5)
+- Check LangSmith trace for the SQR step — look at what filter it generated; it may be too restrictive
+
+**SQR generating wrong or overly strict filters:**
+- Inspect the SQR trace in LangSmith — the `query_constructor` sub-chain shows the exact filter generated
+- If a category is not in `categories.json`, SQR won't use it — re-run `load_products.py` to regenerate
+- If filters are too aggressive, consider removing the `categoryName` filter from the query and letting semantic search handle it
 
 **Intent always resolves to "search":**
 - This is the safe default — confirm `last_product_ids` is being sent from the frontend
@@ -427,10 +431,6 @@ User query: "laptops on sale under $2000"
 **Email not sending:**
 - Verify SMTP credentials in `.env`
 - The service logs the error but returns a graceful failure message
-
-**Categories not filtering:**
-- Delete and regenerate `categories.json` by re-running `load_products.py`
-- Check the rephrase chain output in LangSmith for the `filter` field
 
 ---
 
@@ -460,9 +460,8 @@ LANGSMITH_API_KEY=your_key
 LANGSMITH_PROJECT=product-chatbot
 LANGSMITH_TRACING=true
 
-# Search
+# Search (SQR uses TOP_K; threshold filtering is handled by Pinecone natively via SQR)
 SEARCH_TOP_K=5
-SEARCH_THRESHOLD=0.5
 
 # SMTP (optional)
 SMTP_HOST=smtp.gmail.com

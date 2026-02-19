@@ -1,18 +1,21 @@
 """LangChain-based chatbot workflow.
 
-Chains:
-  1. intent_chain     — LLM classifies user message as 'search', 'email', or 'purchase'
-  2. rephrase_chain   — LLM optimises the query for vector search AND emits a Pinecone
-                        metadata filter (categoryName, salePrice, customerRating)
-  3. response_chain   — LLM generates a friendly recommendation response with a CTA
-                        asking the user if they want email or purchase
+Chains / retrievers:
+  1. intent_chain  — LLM classifies user message as 'search', 'email', or 'purchase'
+  2. sqr           — SelfQueryingRetriever: decomposes the query into a semantic
+                     search string + Pinecone metadata filter in one LLM call,
+                     then runs the vector search. Replaces the old rephrase_chain
+                     + manual metadata_filter plumbing entirely.
+  3. response_chain — LLM generates a friendly recommendation response with a CTA
 """
 
 import json
 import logging
 import re
+from pathlib import Path
 from typing import Any, Optional
 
+from langchain.retrievers.self_query.base import SelfQueryRetriever
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_ollama import ChatOllama
@@ -21,6 +24,7 @@ from langchain_community.tools.tavily_search import TavilySearchResults
 from app.config import get_settings
 from app.database.mongodb import mongodb
 from app.database.pinecone_db import pinecone_db
+from app.models import UserInDB
 from app.models.product import Product
 from app.models.request import ActionType
 from app.services.email_service import email_service
@@ -30,10 +34,20 @@ settings = get_settings()
 
 
 class ChatbotService:
-    """LangChain-based chatbot service."""
+    """LangChain-based chatbot service using SelfQueryingRetriever."""
 
     def __init__(self) -> None:
-        """Initialize the chatbot service."""
+        """Initialise the chatbot service.
+
+        Build order:
+          1. LLM
+          2. intent_chain and response_chain (no external deps)
+          3. Load categories.json → build SQR (needs vectorstore + LLM + categories)
+
+        The vectorstore is already connected by the time this constructor runs
+        because pinecone_db.connect() is called in main.py's lifespan handler
+        before the ChatbotService singleton is first used.
+        """
         self.llm = ChatOllama(
             base_url=settings.ollama_base_url,
             model=settings.ollama_model,
@@ -41,147 +55,168 @@ class ChatbotService:
         )
 
         try:
-            if settings.tavily_api_key:
-                self.tavily = TavilySearchResults(
+            self.tavily = (
+                TavilySearchResults(
                     max_results=settings.tavily_max_results,
                     search_depth=settings.tavily_search_depth,
                 )
-            else:
-                self.tavily = None
+                if settings.tavily_api_key
+                else None
+            )
         except Exception as e:
-            logger.warning(f"Failed to initialize Tavily: {e}")
+            logger.warning(f"Failed to initialise Tavily: {e}")
             self.tavily = None
+
+        # sqr is lazily initialised on first use so that the service module can
+        # be imported before Pinecone has connected (e.g. during test collection).
+        self.sqr: Optional[SelfQueryRetriever] = None
 
         self._build_chains()
 
-    def _build_chains(self) -> None:
-        """Build all LangChain chains used in the workflow."""
+    # ── Chain / retriever construction ─────────────────────────────────────────
 
-        # ── Chain 1: Intent Detection ──────────────────────────────────────
-        # Runs first on every message to decide which workflow branch to take.
+    def _build_chains(self) -> None:
+        """Build intent_chain and response_chain."""
+
+        # ── Chain 1: Intent Detection ──────────────────────────────────────────
         intent_prompt = PromptTemplate.from_template(
             """You are an intent classifier for a product recommendation chatbot.
 
-            Classify the user's message into EXACTLY one of these intents:
-            - "search"   : The user is looking for products, asking questions, or browsing.
-            - "email"    : The user wants to receive product details via email
-                           (e.g. "send it to me", "email me that", "shoot it to my inbox").
-            - "purchase" : The user wants to buy or order a product
-                           (e.g. "I'll take it", "buy the Sony ones", "purchase that laptop").
-            
-            Rules:
-            - If the message is ambiguous between email/purchase and search, choose "search".
-            - Return ONLY a JSON object with two fields and nothing else:
-              {{"intent": "<search|email|purchase>", "product_hint": "<product name or null>"}}
-            
-            Previously shown products (may be referenced): {last_product_names}
-            User message: {query}
-            
-            JSON response:"""
+Classify the user's message into EXACTLY one of these intents:
+- "search"   : The user is looking for products, asking questions, or browsing.
+- "email"    : The user wants product details sent via email
+               (e.g. "send it to me", "email me that", "shoot it to my inbox").
+- "purchase" : The user wants to buy or order a product
+               (e.g. "I'll take it", "buy the Sony ones", "purchase that laptop").
+
+Rules:
+- If the message is ambiguous between email/purchase and search, choose "search".
+- Return ONLY a JSON object with two fields and nothing else:
+  {{"intent": "<search|email|purchase>", "product_hint": "<product name or null>"}}
+
+Previously shown products (may be referenced): {last_product_names}
+User message: {query}
+
+JSON response:"""
         )
         self.intent_chain = intent_prompt | self.llm | StrOutputParser()
 
-        # ── Chain 2: Query Rephrasing + Metadata Filter ────────────────────
-        # Produces a rephrased query string AND an optional Pinecone filter dict.
-        rephrase_prompt = PromptTemplate.from_template(
-            """You are a search query optimizer for a BestBuy Canada product catalogue.
-
-            Your job is to:
-            1. Rephrase the user's query into a concise, keyword-rich semantic search string.
-            2. Extract any metadata filters the user explicitly mentioned.
-            
-            Supported filter fields (use Pinecone filter syntax):
-            - categoryName  : Use {{"$in": [...]}} with the most relevant category names from:
-              {available_categories}
-            - salePrice     : Use {{"$lte": <number>}} for "under $X", {{"$gte": <number>}} for "over $X"
-            - customerRating: Use {{"$gte": <number>}} for "4 stars+", "highly rated", "top rated" etc.
-            - isOnSale      : Use true for "on sale", "discounted", "deals"
-            
-            Rules:
-            - Only add a filter field if the user explicitly mentioned it.
-            - If no filters apply, return an empty object for "filter".
-            - Return ONLY valid JSON and nothing else.
-            
-            User query: {query}
-            
-            Respond with exactly this JSON shape:
-            {{"rephrased": "<optimised search string>", "filter": {{}}}}"""
-        )
-        self.rephrase_chain = rephrase_prompt | self.llm | StrOutputParser()
-
-        # ── Chain 3: Response Generation ───────────────────────────────────
-        # Generates the final user-facing message with a CTA.
+        # ── Chain 2: Response Generation ───────────────────────────────────────
         response_prompt = PromptTemplate.from_template(
             """You are a friendly and helpful product recommendation assistant for BestBuy Canada.
 
-            User name: {user_name}
-            Products found: {has_results}
-            Source: {source}
-            
-            {products}
-            
-            Instructions:
-            - Greet the user by first name and summarise what you found in a warm, conversational tone.
-            - Highlight key selling points (price, rating, sale status) for up to 3 products.
-            - At the end of your response, always add this call-to-action on a new line:
-              "Would you like me to **send these product details to your email**, or would you like to **purchase** one of them? Just let me know!"
-            - If no products were found, apologise and suggest the user try different keywords.
-            - Keep the response concise — 3 to 5 sentences before the CTA.
-            
-            Response:"""
+User name: {user_name}
+Products found: {has_results}
+Source: {source}
+
+{products}
+
+Instructions:
+- Greet the user by first name and summarise what you found in a warm, conversational tone.
+- Highlight key selling points (price, rating, sale status) for up to 3 products.
+- Keep the response concise — 3 to 5 sentences.
+- At the very end, on its own line, output exactly this separator and CTA (only when products were found):
+  ---CTA---
+  📬 Want to go further? **Send these product details to your email** or **purchase one right now** — just let me know!
+- If no products were found, apologise and suggest the user try different keywords. Omit the ---CTA--- line.
+
+Response:"""
         )
         self.response_chain = response_prompt | self.llm | StrOutputParser()
 
-    # ── Helpers ────────────────────────────────────────────────────────────
+    def _get_or_build_sqr(self) -> SelfQueryRetriever:
+        """Return the SQR, building it on first call.
 
-    def _load_available_categories(self) -> str:
-        """Load categories from categories.json for use in the rephrase prompt."""
-        import json
-        from pathlib import Path
-        categories_file = Path(__file__).parent.parent.parent / "data" / "categories.json"
+        Lazy initialisation lets the module load before Pinecone connects,
+        and ensures categories.json is read after load_products.py has written it.
+        """
+        if self.sqr is not None:
+            return self.sqr
+
+        categories = self._load_categories()
+        self.sqr = pinecone_db.build_sqr(llm=self.llm, categories=categories)
+        return self.sqr
+
+    # ── Helpers ────────────────────────────────────────────────────────────────
+
+    def _load_categories(self) -> list[str]:
+        """Read category list from categories.json written by load_products.py."""
+        categories_file = (
+            Path(__file__).parent.parent.parent / "data" / "categories.json"
+        )
         try:
             with open(categories_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
-            return ", ".join(data.get("categories", []))
-        except Exception:
-            return "(categories unavailable)"
+            categories = data.get("categories", [])
+            logger.info(f"Loaded {len(categories)} categories from {categories_file}")
+            return categories
+        except FileNotFoundError:
+            logger.warning(
+                "categories.json not found — SQR will have no category filter. "
+                "Run load_products.py to generate it."
+            )
+            return []
+        except Exception as e:
+            logger.warning(f"Failed to load categories.json: {e}")
+            return []
 
-    def _parse_json_from_llm(self, raw: str) -> dict:
-        """Extract a JSON object from LLM output, stripping markdown fences."""
+    def _parse_intent(self, raw: str) -> tuple[str, Optional[str]]:
+        """Extract intent and product_hint from LLM JSON output."""
         raw = raw.strip()
-        # Remove ```json ... ``` or ``` ... ``` fences
         raw = re.sub(r"^```(?:json)?", "", raw, flags=re.MULTILINE).strip()
         raw = re.sub(r"```$", "", raw, flags=re.MULTILINE).strip()
-        # Find first { ... } block
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if match:
-            return json.loads(match.group())
-        raise ValueError(f"No JSON object found in LLM output: {raw}")
+            data = json.loads(match.group())
+            return data.get("intent", "search").lower(), data.get("product_hint")
+        return "search", None
 
-    async def _get_user_info(self, user_id: str):
-        """Retrieve user from MongoDB."""
+    async def _get_user_info(self, user_id: str) -> Optional[UserInDB]:
+        """Retrieve user document from MongoDB."""
         try:
             return await mongodb.get_user(user_id)
         except Exception as e:
             logger.warning(f"Failed to retrieve user {user_id}: {e}")
             return None
 
-    async def _search_products(
-        self,
-        query: str,
-        metadata_filter: Optional[dict] = None,
-    ) -> list[Product]:
-        """Search Pinecone with optional metadata filter."""
+    async def _run_sqr(self, query: str) -> list[Product]:
+        """Run the SelfQueryingRetriever and map Documents → Product models.
+
+        SQR handles both query decomposition (Step 1) and the Pinecone
+        vector search with metadata filtering (Step 3) in a single call.
+        The LLM inside SQR interprets the query, extracts any filters, and
+        translates them to Pinecone syntax automatically.
+        """
+        retriever = self._get_or_build_sqr()
         try:
-            return await pinecone_db.search_products(
-                query,
-                top_k=settings.vector_search_top_k,
-                threshold=settings.vector_search_threshold,
-                metadata_filter=metadata_filter or None,
-            )
+            # SQR.ainvoke returns a list of LangChain Document objects
+            docs = await retriever.ainvoke(query)
         except Exception as e:
-            logger.error(f"Vector search failed: {e}")
+            logger.error(f"SQR retrieval failed: {e}")
             return []
+
+        products: list[Product] = []
+        for doc in docs:
+            meta = doc.metadata
+            try:
+                products.append(
+                    Product(
+                        sku=meta.get("sku", meta.get("product_id", "")),
+                        name=meta.get("name", ""),
+                        shortDescription=meta.get("shortDescription", doc.page_content),
+                        customerRating=meta.get("customerRating"),
+                        productUrl=meta.get("productUrl", ""),
+                        regularPrice=float(meta.get("regularPrice", 0.0)),
+                        salePrice=float(meta.get("salePrice", 0.0)),
+                        categoryName=meta.get("categoryName", ""),
+                        isOnSale=bool(meta.get("isOnSale", False)),
+                        highResImage=meta.get("highResImage") or None,
+                        relevance_score=None,  # SQR does not expose scores
+                    )
+                )
+            except Exception as e:
+                logger.warning(f"Skipping malformed product document: {e}")
+        return products
 
     async def _web_search(self, query: str) -> list[dict]:
         """Fallback Tavily web search."""
@@ -201,7 +236,6 @@ class ChatbotService:
         source: str,
     ) -> str:
         """Run the response generation chain."""
-        product_text = ""
         if products:
             lines = []
             for i, p in enumerate(products[:5], 1):
@@ -209,8 +243,9 @@ class ChatbotService:
                 rating = f" | ⭐ {p.customerRating}/5" if p.customerRating else ""
                 lines.append(
                     f"{i}. {p.name}{sale_tag}{rating}\n"
-                    f"   Price: ${p.salePrice:.2f} CAD{' (was $' + f'{p.regularPrice:.2f}' + ')' if p.isOnSale else ''}\n"
-                    f"   Category: {p.categoryName}\n"
+                    f"   Price: ${p.salePrice:.2f} CAD"
+                    + (f" (was ${p.regularPrice:.2f})" if p.isOnSale else "")
+                    + f"\n   Category: {p.categoryName}\n"
                     f"   {p.shortDescription[:180]}..."
                 )
             product_text = "\n\n".join(lines)
@@ -231,15 +266,14 @@ class ChatbotService:
             f"- {r.get('title', '')}: {r.get('content', '')[:200]}"
             for r in web_results[:3]
         )
-        result = await self.response_chain.ainvoke({
-            "user_name": user_name,
-            "has_results": "True (web search)",
-            "source": "web_search",
-            "products": f"Web search results:\n{summary}",
-        })
-        return result.strip()
+        return await self._generate_response(
+            user_name=user_name,
+            products=[],
+            has_results=True,
+            source="web_search",
+        )
 
-    # ── Public API ─────────────────────────────────────────────────────────
+    # ── Public API ─────────────────────────────────────────────────────────────
 
     async def execute_query(
         self,
@@ -248,35 +282,37 @@ class ChatbotService:
         conversation_id: str,
         last_product_ids: Optional[list[str]] = None,
     ) -> dict[str, Any]:
-        """Execute the chatbot workflow.
+        """Execute the full chatbot workflow.
 
         Workflow:
-          Step 0 — Intent detection (LLM)
-                   → 'email' or 'purchase': skip search, trigger action directly
-                   → 'search': continue to Steps 1-5
-          Step 1 — Rephrase query + extract metadata filter (LLM)
-          Step 2 — Retrieve user info (MongoDB)
-          Step 3 — Vector search with optional filter (Pinecone)
-          Step 4 — Web search fallback if no results (Tavily)
-          Step 5 — Generate response with CTA (LLM)
+          Step 0 — intent_chain (LLM)
+                   → 'email' or 'purchase': resolve product, call execute_action, return
+                   → 'search': continue
+          Step 1+3 — SelfQueryingRetriever (single LLM call)
+                   Decomposes query into semantic string + metadata filter,
+                   runs Pinecone search with filter applied. Replaces the old
+                   rephrase_chain (Step 1) and manual search_products call (Step 3).
+          Step 2 — MongoDB user lookup (runs in parallel context, logged separately)
+          Step 4 — Tavily web search fallback (if SQR returns no results)
+          Step 5 — response_chain (LLM) generates friendly reply + CTA
         """
         try:
             logger.info(f"Starting workflow for query: '{user_query}'")
 
-            # ── Step 0: Intent Detection ───────────────────────────────────
+            # ── Step 0: Intent Detection ───────────────────────────────────────
             logger.info("Step 0: Detecting intent")
             last_product_ids = last_product_ids or []
 
-            # Resolve last product names for context (best-effort)
+            # Resolve product names for the intent prompt context
             last_product_names = "none"
             if last_product_ids:
-                fetched = []
+                fetched_names = []
                 for pid in last_product_ids[:3]:
                     p = await pinecone_db.get_product_by_id(pid)
                     if p:
-                        fetched.append(p.name)
-                if fetched:
-                    last_product_names = ", ".join(fetched)
+                        fetched_names.append(p.name)
+                if fetched_names:
+                    last_product_names = ", ".join(fetched_names)
 
             intent_raw = await self.intent_chain.ainvoke({
                 "query": user_query,
@@ -284,22 +320,17 @@ class ChatbotService:
             })
 
             try:
-                intent_data = self._parse_json_from_llm(intent_raw)
-                intent = intent_data.get("intent", "search").lower()
-                product_hint = intent_data.get("product_hint")
+                intent, product_hint = self._parse_intent(intent_raw)
             except Exception as e:
-                logger.warning(f"Intent parsing failed, defaulting to 'search': {e}")
-                intent = "search"
-                product_hint = None
+                logger.warning(f"Intent parse failed, defaulting to 'search': {e}")
+                intent, product_hint = "search", None
 
-            logger.info(f"Detected intent: '{intent}', product_hint: '{product_hint}'")
+            logger.info(f"Intent: '{intent}' | product_hint: '{product_hint}'")
 
-            # ── Intent branch: email or purchase ──────────────────────────
+            # ── Intent branch: email or purchase ───────────────────────────────
             if intent in ("email", "purchase") and last_product_ids:
-                # Use the first product from last shown products, or match by hint
                 target_id = last_product_ids[0]
                 if product_hint and len(last_product_ids) > 1:
-                    # Try to find the best matching product by hint
                     for pid in last_product_ids:
                         p = await pinecone_db.get_product_by_id(pid)
                         if p and product_hint.lower() in p.name.lower():
@@ -320,44 +351,23 @@ class ChatbotService:
                     "error": None if action_result["success"] else action_result.get("error"),
                 }
 
-            # ── Step 1: Rephrase + filter ──────────────────────────────────
-            logger.info("Step 1: Rephrasing query and extracting metadata filter")
-            available_categories = self._load_available_categories()
-
-            rephrase_raw = await self.rephrase_chain.ainvoke({
-                "query": user_query,
-                "available_categories": available_categories,
-            })
-
-            try:
-                rephrase_data = self._parse_json_from_llm(rephrase_raw)
-                rephrased_query = rephrase_data.get("rephrased", user_query).strip()
-                metadata_filter = rephrase_data.get("filter") or None
-                # Sanitise: empty dict → None
-                if metadata_filter == {}:
-                    metadata_filter = None
-            except Exception as e:
-                logger.warning(f"Rephrase parsing failed, using original query: {e}")
-                rephrased_query = user_query
-                metadata_filter = None
-
-            logger.info(f"Rephrased: '{user_query}' → '{rephrased_query}'")
-            logger.info(f"Metadata filter: {metadata_filter}")
-
-            # ── Step 2: User info ──────────────────────────────────────────
-            logger.info(f"Step 2: Retrieving user info for user_id: {user_id}")
+            # ── Step 2: User info ──────────────────────────────────────────────
+            logger.info(f"Step 2: Retrieving user info for: {user_id}")
             user_info = await self._get_user_info(user_id)
-            user_name = user_info.firstName if user_info else "there"
+            user_name = user_info.firstName if user_info and user_info.firstName else "there"
 
-            # ── Step 3: Vector search ──────────────────────────────────────
-            logger.info("Step 3: Searching vector database")
-            products = await self._search_products(rephrased_query, metadata_filter)
+            # ── Steps 1 + 3: SelfQueryingRetriever ────────────────────────────
+            # A single LLM call decomposes the query into (semantic string, filter),
+            # then runs the filtered Pinecone vector search. No manual JSON parsing.
+            logger.info("Steps 1+3: Running SelfQueryingRetriever")
+            products = await self._run_sqr(user_query)
             search_source = "vector_db" if products else "none"
+            logger.info(f"SQR returned {len(products)} products")
 
-            # ── Step 4: Web search fallback ────────────────────────────────
+            # ── Step 4: Web search fallback ────────────────────────────────────
             if not products and self.tavily:
-                logger.info("Step 4: Falling back to web search")
-                web_results = await self._web_search(rephrased_query)
+                logger.info("Step 4: Falling back to Tavily web search")
+                web_results = await self._web_search(user_query)
                 if web_results:
                     return {
                         "message": await self._generate_web_response(user_name, web_results),
@@ -368,29 +378,29 @@ class ChatbotService:
                         "error": None,
                     }
 
-            # ── Step 5: Generate response ──────────────────────────────────
+            # ── Step 5: Generate response ──────────────────────────────────────
             logger.info("Step 5: Generating response")
             response_message = await self._generate_response(
                 user_name=user_name,
                 products=products,
-                has_results=len(products) > 0,
+                has_results=bool(products),
                 source=search_source,
             )
 
-            logger.info(f"Workflow completed. Found {len(products)} products")
+            logger.info(f"Workflow complete — {len(products)} products returned")
             return {
                 "message": response_message,
                 "products": products,
                 "conversation_id": conversation_id,
-                "has_results": len(products) > 0,
+                "has_results": bool(products),
                 "source": search_source,
                 "error": None,
             }
 
         except Exception as e:
-            logger.error(f"Error executing workflow: {e}")
+            logger.error(f"Workflow error: {e}")
             return {
-                "message": "I apologise, but I encountered an error processing your request. Please try again.",
+                "message": "I apologise, but I encountered an error. Please try again.",
                 "products": [],
                 "conversation_id": conversation_id,
                 "has_results": False,
@@ -408,11 +418,7 @@ class ChatbotService:
         try:
             user_info = await self._get_user_info(user_id)
             if not user_info:
-                return {
-                    "success": False,
-                    "message": "User not found.",
-                    "error": "user_not_found",
-                }
+                return {"success": False, "message": "User not found.", "error": "user_not_found"}
 
             product = await pinecone_db.get_product_by_id(product_id)
             if not product:
@@ -423,18 +429,20 @@ class ChatbotService:
                 }
 
             user_name = user_info.firstName if user_info.firstName else "there"
+            user_email = user_info.email
+
             if action == ActionType.EMAIL:
                 try:
                     await email_service.send_product_email(
-                        to_email=user_info.email,
-                        user_name=user_name,
+                        recipient_email=user_email,
+                        recipient_name=user_name,
                         product=product,
                     )
                     return {
                         "success": True,
                         "message": (
-                            f"Done, {user_name}! I've sent the details for **{product.name}** "
-                            f"to {user_email}. Check your inbox! 📧"
+                            f"Done, {user_name}! I've sent the details for "
+                            f"**{product.name}** to {user_email}. Check your inbox! 📧"
                         ),
                         "details": {"email": user_email, "product_name": product.name},
                     }
@@ -447,7 +455,6 @@ class ChatbotService:
                     }
 
             elif action == ActionType.PURCHASE:
-                # Simulate purchase — replace with real payment integration
                 order_id = f"ORD-{product_id}-{user_id[-4:]}"
                 return {
                     "success": True,
@@ -455,7 +462,7 @@ class ChatbotService:
                         f"Great choice, {user_name}! Your order for **{product.name}** "
                         f"has been placed. Order ID: `{order_id}`. "
                         f"Total: ${product.salePrice:.2f} CAD. "
-                        f"You'll receive a confirmation at {user_email}. 🛒"
+                        f"A confirmation will be sent to {user_email}. 🛒"
                     ),
                     "details": {
                         "order_id": order_id,
@@ -464,14 +471,10 @@ class ChatbotService:
                     },
                 }
 
-            return {
-                "success": False,
-                "message": f"Unknown action: {action}",
-                "error": "unknown_action",
-            }
+            return {"success": False, "message": f"Unknown action: {action}", "error": "unknown_action"}
 
         except Exception as e:
-            logger.error(f"Error executing action {action}: {e}")
+            logger.error(f"Action error ({action}): {e}")
             return {
                 "success": False,
                 "message": "Failed to execute action. Please try again.",
@@ -479,5 +482,5 @@ class ChatbotService:
             }
 
 
-# Global chatbot service instance
+# Global singleton — constructed at import time, SQR built lazily on first query
 chatbot_service = ChatbotService()
