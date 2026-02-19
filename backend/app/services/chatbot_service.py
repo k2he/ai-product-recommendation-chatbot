@@ -161,7 +161,7 @@ class ChatbotService:
     async def _get_user_info(self, user_id: str):
         """Retrieve user from MongoDB."""
         try:
-            return await mongodb.find_one("users", {"user_id": user_id})
+            return await mongodb.get_user(user_id)
         except Exception as e:
             logger.warning(f"Failed to retrieve user {user_id}: {e}")
             return None
@@ -175,8 +175,8 @@ class ChatbotService:
         try:
             return await pinecone_db.search_products(
                 query,
-                top_k=settings.search_top_k,
-                threshold=settings.search_threshold,
+                top_k=settings.vector_search_top_k,
+                threshold=settings.vector_search_threshold,
                 metadata_filter=metadata_filter or None,
             )
         except Exception as e:
@@ -347,7 +347,7 @@ class ChatbotService:
             # ── Step 2: User info ──────────────────────────────────────────
             logger.info(f"Step 2: Retrieving user info for user_id: {user_id}")
             user_info = await self._get_user_info(user_id)
-            user_name = user_info.get("firstName", "there") if user_info else "there"
+            user_name = user_info.firstName if user_info else "there"
 
             # ── Step 3: Vector search ──────────────────────────────────────
             logger.info("Step 3: Searching vector database")
@@ -422,13 +422,11 @@ class ChatbotService:
                     "error": "product_not_found",
                 }
 
-            user_name = user_info.get("firstName", "there")
-            user_email = user_info.get("email", "")
-
+            user_name = user_info.firstName if user_info.firstName else "there"
             if action == ActionType.EMAIL:
                 try:
                     await email_service.send_product_email(
-                        to_email=user_email,
+                        to_email=user_info.email,
                         user_name=user_name,
                         product=product,
                     )

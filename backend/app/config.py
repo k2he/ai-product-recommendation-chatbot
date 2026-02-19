@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     # Pinecone
     pinecone_api_key: str = Field(default="", description="Pinecone API key")
     pinecone_environment: str = Field(default="gcp-starter", description="Pinecone environment")
-    pinecone_index_name: str = "ai-product-recommendation-chatbot"
+    pinecone_index_name: str = "ai-product-recommendation-chatbot-bestbuy"
     pinecone_dimension: int = 1024  # Matches ollama embedding dimension
     pinecone_metric: str = "cosine"
     pinecone_namespace: str = "product-catalog"

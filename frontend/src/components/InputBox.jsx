@@ -60,7 +60,7 @@ const InputBox = ({ onSend, loading, disabled }) => {
           </button>
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          Try: "I need wireless headphones with good battery life"
+          Try: "I need a large screen gaming monitor under $300"
         </p>
       </form>
     </div>
