@@ -8,12 +8,25 @@ from pydantic import BaseModel, Field
 from app.models.product import Product
 
 
-class ActionType(str, Enum):
-    """Available user actions."""
 
-    PURCHASE = "purchase"
+class IntentType(str, Enum):
+    """Valid intent types for intent classification."""
+
+    SEARCH = "search"
     EMAIL = "email"
-    NONE = "none"
+    PURCHASE = "purchase"
+
+
+class IntentResponse(BaseModel):
+    """Structured output model for intent classification."""
+
+    intent: IntentType = Field(
+        description="The classified intent: 'search', 'email', or 'purchase'"
+    )
+    product_hint: Optional[str] = Field(
+        default=None,
+        description="The product name mentioned by the user, or null if none"
+    )
 
 
 class ChatRequest(BaseModel):
@@ -42,7 +55,7 @@ class ChatRequest(BaseModel):
 class ActionRequest(BaseModel):
     """Action request model for tool execution."""
 
-    action: ActionType
+    action: IntentType
     product_id: str = Field(..., description="Product SKU for the action")
     conversation_id: Optional[str] = Field(None, description="Conversation ID")
 
@@ -102,7 +115,7 @@ class ActionResponse(BaseModel):
 
     success: bool = Field(..., description="Whether the action succeeded")
     message: str = Field(..., description="Result message")
-    action: ActionType = Field(..., description="Action that was executed")
+    action: IntentType = Field(..., description="Action that was executed")
     product_id: str = Field(..., description="Product SKU that was acted on")
     details: Optional[dict[str, Any]] = Field(None, description="Additional action details")
 

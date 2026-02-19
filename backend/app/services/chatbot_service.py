@@ -11,7 +11,6 @@ Chains / retrievers:
 
 import json
 import logging
-import re
 from pathlib import Path
 from typing import Any, Optional
 
@@ -26,7 +25,7 @@ from app.database.mongodb import mongodb
 from app.database.pinecone_db import pinecone_db
 from app.models import UserInDB
 from app.models.product import Product
-from app.models.request import ActionType
+from app.models.request import IntentResponse, IntentType
 from app.services.email_service import email_service
 
 logger = logging.getLogger(__name__)
@@ -78,49 +77,54 @@ class ChatbotService:
     def _build_chains(self) -> None:
         """Build intent_chain and response_chain."""
 
-        # ── Chain 1: Intent Detection ──────────────────────────────────────────
+        # ── Chain 1: Intent Detection (with Structured Output) ────────────────
         intent_prompt = PromptTemplate.from_template(
-            """You are an intent classifier for a product recommendation chatbot.
+            """Classify the user's intent for a product recommendation chatbot.
 
-Classify the user's message into EXACTLY one of these intents:
-- "search"   : The user is looking for products, asking questions, or browsing.
-- "email"    : The user wants product details sent via email
-               (e.g. "send it to me", "email me that", "shoot it to my inbox").
-- "purchase" : The user wants to buy or order a product
-               (e.g. "I'll take it", "buy the Sony ones", "purchase that laptop").
+INTENT MEANINGS:
+• Browsing/searching for products or asking questions
+• Requesting product details via email (e.g. "send it to me", "email that")
+• Wanting to purchase/order a product (e.g. "I'll take it", "buy the Sony ones")
 
-Rules:
-- If the message is ambiguous between email/purchase and search, choose "search".
-- Return ONLY a JSON object with two fields and nothing else:
-  {{"intent": "<search|email|purchase>", "product_hint": "<product name or null>"}}
+CONTEXT:
+Previously shown products: {last_product_names}
 
-Previously shown products (may be referenced): {last_product_names}
-User message: {query}
+INSTRUCTIONS:
+- Choose the most appropriate intent (default to the first if ambiguous)
+- Extract any specific product name mentioned, or leave blank if none
 
-JSON response:"""
+USER MESSAGE: {query}"""
         )
-        self.intent_chain = intent_prompt | self.llm | StrOutputParser()
+        # Use structured output - returns IntentResponse directly
+        self.intent_chain = intent_prompt | self.llm.with_structured_output(
+            IntentResponse
+        )
 
         # ── Chain 2: Response Generation ───────────────────────────────────────
         response_prompt = PromptTemplate.from_template(
-            """You are a friendly and helpful product recommendation assistant for BestBuy Canada.
+            """Generate a friendly product recommendation response for BestBuy Canada.
 
-User name: {user_name}
-Products found: {has_results}
-Source: {source}
+USER: {user_name}
+FOUND: {has_results}
+SOURCE: {source}
 
+PRODUCTS:
 {products}
 
-Instructions:
-- Greet the user by first name and summarise what you found in a warm, conversational tone.
-- Highlight key selling points (price, rating, sale status) for up to 3 products.
-- Keep the response concise — 3 to 5 sentences.
-- At the very end, on its own line, output exactly this separator and CTA (only when products were found):
-  ---CTA---
-  📬 Want to go further? **Send these product details to your email** or **purchase one right now** — just let me know!
-- If no products were found, apologise and suggest the user try different keywords. Omit the ---CTA--- line.
+RESPONSE GUIDELINES:
+• Greet {user_name} by first name with a warm, conversational tone
+• Summarize findings and highlight key selling points (price, rating, sales) for top 3 products
+• Keep it concise: 3-5 sentences maximum
 
-Response:"""
+IF PRODUCTS FOUND, end with exactly:
+---CTA---
+📬 Want to go further? **Send these product details to your email** or **purchase one right now** — just let me know!
+
+IF NO PRODUCTS FOUND:
+• Apologize politely and suggest trying different keywords
+• Omit the CTA section
+
+Generate response:"""
         )
         self.response_chain = response_prompt | self.llm | StrOutputParser()
 
@@ -160,16 +164,6 @@ Response:"""
             logger.warning(f"Failed to load categories.json: {e}")
             return []
 
-    def _parse_intent(self, raw: str) -> tuple[str, Optional[str]]:
-        """Extract intent and product_hint from LLM JSON output."""
-        raw = raw.strip()
-        raw = re.sub(r"^```(?:json)?", "", raw, flags=re.MULTILINE).strip()
-        raw = re.sub(r"```$", "", raw, flags=re.MULTILINE).strip()
-        match = re.search(r"\{.*\}", raw, re.DOTALL)
-        if match:
-            data = json.loads(match.group())
-            return data.get("intent", "search").lower(), data.get("product_hint")
-        return "search", None
 
     async def _get_user_info(self, user_id: str) -> Optional[UserInDB]:
         """Retrieve user document from MongoDB."""
@@ -182,10 +176,10 @@ Response:"""
     async def _run_sqr(self, query: str) -> list[Product]:
         """Run the SelfQueryingRetriever and map Documents → Product models.
 
-        SQR handles both query decomposition (Step 1) and the Pinecone
-        vector search with metadata filtering (Step 3) in a single call.
-        The LLM inside SQR interprets the query, extracts any filters, and
-        translates them to Pinecone syntax automatically.
+        SQR handles both query decomposition and the Pinecone vector search
+        with metadata filtering in a single call. The LLM inside SQR interprets
+        the query, extracts any filters, and translates them to Pinecone syntax
+        automatically.
         """
         retriever = self._get_or_build_sqr()
         try:
@@ -288,13 +282,12 @@ Response:"""
           Step 0 — intent_chain (LLM)
                    → 'email' or 'purchase': resolve product, call execute_action, return
                    → 'search': continue
-          Step 1+3 — SelfQueryingRetriever (single LLM call)
+          Step 1 — MongoDB user lookup
+          Step 2 — SelfQueryingRetriever (single LLM call)
                    Decomposes query into semantic string + metadata filter,
-                   runs Pinecone search with filter applied. Replaces the old
-                   rephrase_chain (Step 1) and manual search_products call (Step 3).
-          Step 2 — MongoDB user lookup (runs in parallel context, logged separately)
-          Step 4 — Tavily web search fallback (if SQR returns no results)
-          Step 5 — response_chain (LLM) generates friendly reply + CTA
+                   runs Pinecone search with filter applied.
+          Step 3 — Tavily web search fallback (if SQR returns no results)
+          Step 4 — response_chain (LLM) generates friendly reply + CTA
         """
         try:
             logger.info(f"Starting workflow for query: '{user_query}'")
@@ -314,15 +307,15 @@ Response:"""
                 if fetched_names:
                     last_product_names = ", ".join(fetched_names)
 
-            intent_raw = await self.intent_chain.ainvoke({
-                "query": user_query,
-                "last_product_names": last_product_names,
-            })
-
             try:
-                intent, product_hint = self._parse_intent(intent_raw)
+                intent_response = await self.intent_chain.ainvoke({
+                    "query": user_query,
+                    "last_product_names": last_product_names,
+                })
+                intent = intent_response.intent.value  # Get the string value from enum
+                product_hint = intent_response.product_hint
             except Exception as e:
-                logger.warning(f"Intent parse failed, defaulting to 'search': {e}")
+                logger.warning(f"Intent detection failed, defaulting to 'search': {e}")
                 intent, product_hint = "search", None
 
             logger.info(f"Intent: '{intent}' | product_hint: '{product_hint}'")
@@ -338,7 +331,7 @@ Response:"""
                             break
 
                 action_result = await self.execute_action(
-                    action=ActionType(intent),
+                    action=IntentType(intent),
                     product_id=target_id,
                     user_id=user_id,
                 )
@@ -351,22 +344,22 @@ Response:"""
                     "error": None if action_result["success"] else action_result.get("error"),
                 }
 
-            # ── Step 2: User info ──────────────────────────────────────────────
-            logger.info(f"Step 2: Retrieving user info for: {user_id}")
+            # ── Step 1: User info ──────────────────────────────────────────────
+            logger.info(f"Step 1: Retrieving user info for: {user_id}")
             user_info = await self._get_user_info(user_id)
             user_name = user_info.firstName if user_info and user_info.firstName else "there"
 
-            # ── Steps 1 + 3: SelfQueryingRetriever ────────────────────────────
+            # ── Step 2: SelfQueryingRetriever ─────────────────────────────────
             # A single LLM call decomposes the query into (semantic string, filter),
             # then runs the filtered Pinecone vector search. No manual JSON parsing.
-            logger.info("Steps 1+3: Running SelfQueryingRetriever")
+            logger.info("Step 2: Running SelfQueryingRetriever")
             products = await self._run_sqr(user_query)
             search_source = "vector_db" if products else "none"
             logger.info(f"SQR returned {len(products)} products")
 
-            # ── Step 4: Web search fallback ────────────────────────────────────
+            # ── Step 3: Web search fallback ────────────────────────────────────
             if not products and self.tavily:
-                logger.info("Step 4: Falling back to Tavily web search")
+                logger.info("Step 3: Falling back to Tavily web search")
                 web_results = await self._web_search(user_query)
                 if web_results:
                     return {
@@ -378,8 +371,8 @@ Response:"""
                         "error": None,
                     }
 
-            # ── Step 5: Generate response ──────────────────────────────────────
-            logger.info("Step 5: Generating response")
+            # ── Step 4: Generate response ──────────────────────────────────────
+            logger.info("Step 4: Generating response")
             response_message = await self._generate_response(
                 user_name=user_name,
                 products=products,
@@ -410,7 +403,7 @@ Response:"""
 
     async def execute_action(
         self,
-        action: ActionType,
+        action: IntentType,
         product_id: str,
         user_id: str,
     ) -> dict[str, Any]:
@@ -431,7 +424,7 @@ Response:"""
             user_name = user_info.firstName if user_info.firstName else "there"
             user_email = user_info.email
 
-            if action == ActionType.EMAIL:
+            if action == IntentType.EMAIL:
                 try:
                     await email_service.send_product_email(
                         recipient_email=user_email,
@@ -454,7 +447,7 @@ Response:"""
                         "error": str(e),
                     }
 
-            elif action == ActionType.PURCHASE:
+            elif action == IntentType.PURCHASE:
                 order_id = f"ORD-{product_id}-{user_id[-4:]}"
                 return {
                     "success": True,
