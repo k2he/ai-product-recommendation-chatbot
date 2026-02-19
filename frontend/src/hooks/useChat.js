@@ -1,36 +1,53 @@
 import { useState, useCallback } from 'react';
 import { chatAPI } from '../services/api';
 
-export const useChat = () => {
+export const useChat = (userName = 'there') => {
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [conversationId, setConversationId] = useState(null);
+  // Track the SKUs of the most recent products shown to the user
+  const [lastProductIds, setLastProductIds] = useState([]);
 
   const sendMessage = useCallback(async (query) => {
     setLoading(true);
     setError(null);
 
-    // Add user message
+    // Add user message immediately
     const userMessage = {
       id: Date.now(),
       type: 'user',
       content: query,
       timestamp: new Date().toISOString(),
     };
-    setMessages((prev) => [...prev, userMessage]);
+
+    // Optimistic assistant "thinking" message shown before API responds
+    const thinkingId = Date.now() + 1;
+    const thinkingMessage = {
+      id: thinkingId,
+      type: 'thinking',
+      content: `Alright ${userName}, let me help you with that. Give me a second! ⏳`,
+      timestamp: new Date().toISOString(),
+    };
+
+    setMessages((prev) => [...prev, userMessage, thinkingMessage]);
 
     try {
-      const response = await chatAPI.sendMessage(query, conversationId);
+      const response = await chatAPI.sendMessage(query, conversationId, lastProductIds);
 
-      // Update conversation ID
       if (response.conversation_id) {
         setConversationId(response.conversation_id);
       }
 
-      // Add assistant message
+      // Track the new product IDs for the next turn (for intent detection)
+      const newProductIds = (response.products || []).map((p) => p.sku).filter(Boolean);
+      if (newProductIds.length > 0) {
+        setLastProductIds(newProductIds);
+      }
+
+      // Replace thinking message with real assistant response
       const assistantMessage = {
-        id: Date.now() + 1,
+        id: thinkingId,
         type: 'assistant',
         content: response.message,
         products: response.products || [],
@@ -38,23 +55,29 @@ export const useChat = () => {
         source: response.source,
         timestamp: new Date().toISOString(),
       };
-      setMessages((prev) => [...prev, assistantMessage]);
+
+      setMessages((prev) =>
+        prev.map((m) => (m.id === thinkingId ? assistantMessage : m))
+      );
 
       return response;
     } catch (err) {
+      // Replace thinking message with error
       const errorMessage = {
-        id: Date.now() + 1,
+        id: thinkingId,
         type: 'error',
         content: 'Sorry, I encountered an error processing your request. Please try again.',
         timestamp: new Date().toISOString(),
       };
-      setMessages((prev) => [...prev, errorMessage]);
+      setMessages((prev) =>
+        prev.map((m) => (m.id === thinkingId ? errorMessage : m))
+      );
       setError(err.message);
       throw err;
     } finally {
       setLoading(false);
     }
-  }, [conversationId]);
+  }, [conversationId, lastProductIds, userName]);
 
   const executeAction = useCallback(async (action, productId) => {
     setLoading(true);
@@ -63,7 +86,6 @@ export const useChat = () => {
     try {
       const response = await chatAPI.executeAction(action, productId, conversationId);
 
-      // Add action result message
       const resultMessage = {
         id: Date.now(),
         type: 'action_result',
@@ -93,6 +115,7 @@ export const useChat = () => {
   const clearMessages = useCallback(() => {
     setMessages([]);
     setConversationId(null);
+    setLastProductIds([]);
     setError(null);
   }, []);
 

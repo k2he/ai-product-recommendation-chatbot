@@ -1,74 +1,257 @@
 # Product Recommendation Chatbot
 
-A production-ready AI-powered chatbot application that recommends products based on user needs using RAG (Retrieval-Augmented Generation) architecture with LangGraph for workflow orchestration.
+A production-ready AI-powered chatbot that recommends BestBuy Canada products based on user needs, using RAG (Retrieval-Augmented Generation) with LangChain and Pinecone.
+
+---
 
 ## 🚀 Features
 
-- **Intelligent Product Search**: Uses vector similarity search with Pinecone and semantic understanding
-- **Query Rephrasing**: Automatically optimizes user queries for better search results
-- **User Management**: MongoDB-based user profile storage and retrieval
-- **Web Search Fallback**: Tavily integration for when products aren't in the database
-- **Action Tools**: Purchase and email product details functionality
-- **Conversational AI**: Natural language interaction powered by Ollama
-- **Modern UI**: Responsive React interface with Tailwind CSS
-- **Production-Ready**: Docker-based deployment, comprehensive logging, error handling
+- **Smart Intent Detection** — LLM classifies every message as search, email, or purchase before any search is performed
+- **Intelligent Product Search** — Pinecone vector similarity search over BestBuy Canada catalogue data
+- **Metadata Filtering** — LLM extracts category, price range, sale status, and rating filters from natural language and applies them at search time
+- **Query Rephrasing** — Automatically optimises user queries for better semantic recall
+- **User Management** — MongoDB-based user profiles (name, email) used in responses and actions
+- **Web Search Fallback** — Tavily integration when products aren't found in the database
+- **Email & Purchase Actions** — Triggered by UI buttons or free-text (e.g. "send it to my email")
+- **Purchase CTA in every response** — After showing products, the assistant always asks if the user wants to email or purchase
+- **Optimistic UI** — "Alright [Name], let me help you with that. Give me a second! ⏳" shown instantly while the API responds
+- **Category Registry** — All unique `categoryName` values are extracted at load time and saved for filter prompting
+- **LangSmith Tracing** — Full observability of every chain execution
+- **Modern UI** — Responsive React + Tailwind CSS interface
+
+---
 
 ## 📋 Technology Stack
 
 ### Backend
-- **Framework**: FastAPI (Python 3.11+)
-- **AI/LLM**: LangChain, Ollama
-- **Monitoring**: LangSmith (for tracing and debugging)
-- **Vector Database**: Pinecone
-- **Database**: MongoDB
-- **Web Search**: Tavily API
-- **Package Manager**: UV (ultra-fast Python package manager)
+| Technology | Role |
+|---|---|
+| FastAPI (Python 3.11+) | REST API framework |
+| LangChain | Three-chain AI workflow |
+| Ollama (`gpt-oss:20b` + `nomic-embed-text`) | Local LLM inference & embeddings |
+| Pinecone | Vector database with metadata filtering |
+| MongoDB | User profile storage |
+| Tavily API | Web search fallback |
+| UV | Python package manager |
+| LangSmith | Tracing & debugging |
 
 ### Frontend
-- **Framework**: React 18+
-- **Build Tool**: Vite
-- **Styling**: Tailwind CSS
-- **HTTP Client**: Axios
-- **Icons**: Lucide React
+| Technology | Role |
+|---|---|
+| React 18 | UI framework |
+| Vite | Build tool |
+| Tailwind CSS | Styling |
+| Axios | HTTP client |
+| Lucide React | Icons |
 
 ### Infrastructure
-- **Containerization**: Docker & Docker Compose
-- **Reverse Proxy**: Nginx
+- Docker & Docker Compose
+- Nginx reverse proxy
+
+---
 
 ## 🏗️ Architecture
 
 ```
-┌─────────────┐
-│   React UI  │
-└──────┬──────┘
-       │ HTTP/REST
-       ▼
-┌─────────────────────────────────────┐
-│         FastAPI Backend             │
-│  ┌───────────────────────────────┐  │
-│  │   LangChain Workflow Service  │  │
-│  │  ├─ Query Rephrase Chain      │  │
-│  │  ├─ User Info Retrieval       │  │
-│  │  ├─ Vector Search              │  │
-│  │  ├─ Web Search Fallback        │  │
-│  │  ├─ Action Execution           │  │
-│  │  └─ Response Generation Chain │  │
-│  └───────────────────────────────┘  │
-└─────────────────────────────────────┘
-       │         │         │
-       ▼         ▼         ▼
-   ┌────────┐ ┌──────┐ ┌───────┐
-   │Pinecone│ │MongoDB│ │Tavily │
-   └────────┘ └──────┘ └───────┘
+┌─────────────────────────────────────────────┐
+│                  React UI                   │
+│  - Optimistic "Give me a second!" message  │
+│  - Product cards with Email/Purchase btns  │
+│  - Tracks lastProductIds for intent        │
+└────────────────────┬────────────────────────┘
+                     │ POST /api/v1/chat
+                     │ { query, last_product_ids }
+                     ▼
+┌─────────────────────────────────────────────┐
+│              FastAPI Backend                │
+│                                             │
+│  ┌─────────────────────────────────────┐   │
+│  │       LangChain Workflow            │   │
+│  │                                     │   │
+│  │  Step 0: intent_chain (LLM)         │   │
+│  │    → "search" / "email" / "purchase"│   │
+│  │         │                           │   │
+│  │    ┌────┴────────────┐              │   │
+│  │    │ email/purchase  │  search      │   │
+│  │    ▼                 ▼              │   │
+│  │  execute_action  rephrase_chain     │   │
+│  │  (skip search)   + filter (LLM)    │   │
+│  │                      │             │   │
+│  │                  MongoDB (user)     │   │
+│  │                      │             │   │
+│  │                  Pinecone search    │   │
+│  │                  + metadata filter  │   │
+│  │                      │             │   │
+│  │                  [no results?]      │   │
+│  │                  Tavily fallback    │   │
+│  │                      │             │   │
+│  │                  response_chain     │   │
+│  │                  + CTA (LLM)        │   │
+│  └─────────────────────────────────────┘  │
+└─────────────────────────────────────────────┘
+        │            │             │
+        ▼            ▼             ▼
+   ┌─────────┐  ┌────────┐  ┌──────────┐
+   │Pinecone │  │MongoDB │  │  Tavily  │
+   └─────────┘  └────────┘  └──────────┘
 ```
+
+---
+
+## 🔄 Workflow Details
+
+### Chat Flow (Step by Step)
+
+```
+User types: "show me laptops under $1500 that are on sale"
+                │
+                ▼
+Step 0 ── intent_chain (LLM)
+          Output: { "intent": "search", "product_hint": null }
+                │
+                ▼ (intent = "search")
+Step 1 ── rephrase_chain (LLM)
+          Output: {
+            "rephrased": "laptop sale discount under 1500",
+            "filter": {
+              "categoryName": { "$in": ["Laptops"] },
+              "salePrice":    { "$lte": 1500 },
+              "isOnSale":     true
+            }
+          }
+                │
+                ▼
+Step 2 ── MongoDB → fetch user (name, email)
+                │
+                ▼
+Step 3 ── Pinecone similarity search
+          Query:  "laptop sale discount under 1500"
+          Filter: categoryName IN [Laptops], salePrice ≤ 1500, isOnSale = true
+                │
+          ┌─────┴──────────┐
+          │ results found? │
+          └─────┬──────────┘
+       yes      │       no
+          │     │     │
+          │     │   Step 4 ── Tavily web search fallback
+          │     │
+                ▼
+Step 5 ── response_chain (LLM)
+          Generates friendly response + mandatory CTA:
+          "Would you like me to send these to your email, or purchase one?"
+                │
+                ▼
+        Return to frontend
+        { message, products[], source }
+```
+
+### Intent-Based Action Flow (New)
+
+When a user types something like *"email me the MacBook"* or *"I'll take it"*:
+
+```
+User message + last_product_ids (from frontend state)
+                │
+                ▼
+Step 0 ── intent_chain (LLM)
+          Output: { "intent": "email", "product_hint": "MacBook" }
+                │
+                ▼ (intent ≠ "search", last_product_ids present)
+          Match product_hint against last shown products
+          → resolve target product SKU
+                │
+                ▼
+          execute_action("email" | "purchase", product_id, user_id)
+          → email_service.send_product_email() OR
+          → purchase simulation (order ID returned)
+                │
+                ▼
+          Return confirmation message (no products in response)
+          { message: "Done! Sent to kai@...", source: "action" }
+```
+
+### Button Action Flow (Existing)
+
+Clicking Email / Purchase buttons on a product card sends directly to `POST /api/v1/actions` — bypassing chat and intent detection entirely.
+
+---
+
+## 📦 Data Format
+
+Products are loaded from BestBuy Canada JSON files with the structure:
+
+```json
+{
+  "products": [
+    {
+      "sku": "18470962",
+      "name": "Apple AirPods 4 ...",
+      "shortDescription": "Rebuilt for exceptional comfort...",
+      "customerRating": 4.0,
+      "productUrl": "/en-ca/product/.../18470962",
+      "regularPrice": 179.99,
+      "salePrice": 149.99,
+      "saleEndDate": 1771574399000,
+      "categoryName": "Wireless Earbuds & Earphones"
+    }
+  ]
+}
+```
+
+The loader transforms each product to:
+- Prefix `productUrl` with `https://www.bestbuy.ca`
+- Derive `isOnSale = saleEndDate !== null`
+- Store `text = name + " " + shortDescription` as the Pinecone embedding text
+- Store all fields as Pinecone metadata for filtering
+
+### Category Registry
+
+After loading, all unique `categoryName` values are saved to `backend/data/categories.json`:
+
+```json
+{
+  "categories": ["Apple MacBook Air", "Laptops", "Wireless Earbuds & Earphones"],
+  "total": 3
+}
+```
+
+This file is read at runtime by the rephrase chain to populate the list of filterable categories.
+
+---
+
+## 📋 API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/v1/health` | Health check |
+| `POST` | `/api/v1/chat` | Chat (search + intent detection) |
+| `POST` | `/api/v1/actions` | Execute email/purchase via button |
+| `POST` | `/api/v1/users` | Create user |
+| `GET` | `/api/v1/users/{user_id}` | Get user |
+
+### `POST /api/v1/chat` — Request Body
+
+```json
+{
+  "query": "show me headphones under $200",
+  "conversation_id": "conv_abc123",
+  "last_product_ids": ["18470962", "18470963"]
+}
+```
+
+- `last_product_ids`: SKUs of products shown in the previous assistant message. The frontend tracks and sends these automatically to enable free-text email/purchase intents.
+
+---
 
 ## 🚦 Prerequisites
 
 - Docker & Docker Compose
-- **Ollama installed locally** with models: `gpt-oss:20b` and `nomic-embed-text`
-- Pinecone API key (free tier available)
-- Tavily API key (optional, for web search)
-- SMTP credentials (optional, for email functionality)
+- Ollama running locally with `gpt-oss:20b` and `nomic-embed-text` models
+- Pinecone API key (free tier available at pinecone.io)
+- Tavily API key (optional — enables web search fallback)
+- SMTP credentials (optional — enables real email sending)
+
+---
 
 ## 📦 Installation
 
@@ -79,379 +262,212 @@ git clone <repository-url>
 cd product-recommendation-chatbot
 ```
 
-### 2. Set Up Environment Variables
+### 2. Configure Environment
 
-**Backend (.env)**:
 ```bash
 cd backend
 cp .env.example .env
-# Edit .env with your credentials
+# Edit .env — add your PINECONE_API_KEY, TAVILY_API_KEY, SMTP credentials
 ```
 
-**Frontend (.env)**:
-```bash
-cd ../frontend
-cp .env.example .env
-# Edit if needed
+### 3. Add Product Data
+
+Place your BestBuy JSON files in `backend/data/products/`:
+
+```
+backend/data/products/
+├── laptops.json
+└── headphones.json
 ```
 
-### 3. Configure API Keys
+Each file must use the `{ "products": [...] }` wrapper format.
 
-Edit `backend/.env`:
-```bash
-# Pinecone (Required)
-PINECONE_API_KEY=your_pinecone_api_key_here
-PINECONE_ENVIRONMENT=gcp-starter
-
-# Tavily (Optional - for web search)
-TAVILY_API_KEY=your_tavily_api_key_here
-
-# SMTP (Optional - for email functionality)
-SMTP_USERNAME=your_email@gmail.com
-SMTP_PASSWORD=your_app_password_here
-```
-
-## 🏃 Running the Application
-
-### Ensure Ollama is Running Locally
+### 4. Start Services
 
 ```bash
-# Verify Ollama is running
-curl http://localhost:11434/api/tags
-
-# Pull required models if not already available
-ollama pull gpt-oss:20b
-ollama pull nomic-embed-text
-
-# Verify models
-ollama list
-```
-
-### Using Docker Compose (Recommended)
-
-```bash
-# Start all services
+cd ..
 docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop services
-docker-compose down
 ```
 
-### Manual Setup
-
-**1. Start MongoDB**:
-```bash
-docker run -d -p 27017:27017 --name mongodb mongo:7
-```
-
-**2. Verify Ollama**:
-```bash
-# Make sure Ollama is running locally
-ollama list
-ollama pull gpt-oss:20b
-ollama pull nomic-embed-text
-```
-
-**3. Start Backend**:
-```bash
-cd backend
-uv pip install -r pyproject.toml
-python -m app.main
-```
-
-**4. Start Frontend**:
-```bash
-cd frontend
-npm install
-npm run dev
-```
-
-## 📊 Database Initialization
-
-### 1. Initialize Users
+### 5. Pull Ollama Models
 
 ```bash
-cd backend
-python scripts/init_db.py
+docker exec -it product_chatbot_ollama ollama pull gpt-oss:20b
+docker exec -it product_chatbot_ollama ollama pull nomic-embed-text
 ```
 
-This creates three sample users:
-- `user_001`: Kai He (kai.he@example.com)
-- `user_002`: Jane Smith (jane.smith@example.com)
-- `user_003`: Bob Johnson (bob.johnson@example.com)
-
-### 2. Load Product Data
+### 6. Initialize Database & Load Products
 
 ```bash
-python scripts/load_products.py
+# Create sample users in MongoDB
+docker exec -it product_chatbot_backend python scripts/init_db.py
+
+# Load products into Pinecone + save categories.json
+docker exec -it product_chatbot_backend python scripts/load_products.py
 ```
 
-This loads sample products from `backend/data/products/*.json` into Pinecone.
+`load_products.py` will:
+1. Parse all JSON files in `data/products/` (supporting the `{ "products": [] }` format)
+2. Transform and validate each product
+3. Save unique `categoryName` values to `data/categories.json`
+4. Upsert all products into Pinecone with full metadata
 
-## 🧪 Testing
+### 7. Access the Application
 
-### Test Backend API
+| Service | URL |
+|---|---|
+| Frontend Chat UI | http://localhost:3000 |
+| Backend API | http://localhost:8000 |
+| API Docs (Swagger) | http://localhost:8000/docs |
+| LangSmith Traces | https://smith.langchain.com |
 
-```bash
-# Health check
-curl http://localhost:8000/health
+---
 
-# Create user
-curl -X POST http://localhost:8000/api/v1/users \
-  -H "Content-Type: application/json" \
-  -d '{
-    "userId": "test_user",
-    "firstName": "Test",
-    "lastName": "User",
-    "email": "test@example.com",
-    "phone": "+1234567890"
-  }'
+## 🎯 Example Interactions
 
-# Chat request
-curl -X POST http://localhost:8000/api/v1/chat \
-  -H "Content-Type: application/json" \
-  -H "X-User-ID: user_001" \
-  -d '{
-    "query": "I need wireless headphones with good battery life"
-  }'
-```
+**Product search with filters:**
+> "Show me laptops under $1500 that are highly rated"
+→ LLM extracts: `salePrice ≤ 1500`, `customerRating ≥ 4.0`
+→ Pinecone filtered search → product cards + CTA
 
-### Run Unit Tests
+**Free-text email intent:**
+> "Can you send the MacBook to my email?"
+→ LLM detects `intent: email`, matches "MacBook" in last shown products
+→ Email sent → confirmation message (no new search)
 
-```bash
-cd backend
-pytest tests/
-```
+**Free-text purchase intent:**
+> "I'll take the Sony ones"
+→ LLM detects `intent: purchase`, matches "Sony" in last shown products
+→ Order simulated → order ID returned
 
-## 📝 API Documentation
+**On-sale filter:**
+> "Any headphones on sale right now?"
+→ LLM extracts: `isOnSale: true`, `categoryName: { $in: ["Wireless Earbuds & Earphones"] }`
+→ Filtered Pinecone search
 
-Once the backend is running, visit:
-- **Swagger UI**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+---
 
-### Key Endpoints
-
-#### POST `/api/v1/chat`
-Chat with the assistant for product recommendations.
-
-**Headers**:
-- `X-User-ID`: User identifier (required)
-
-**Request Body**:
-```json
-{
-  "query": "I need wireless headphones",
-  "conversation_id": "optional-conv-id"
-}
-```
-
-**Response**:
-```json
-{
-  "message": "I found 3 products...",
-  "products": [...],
-  "conversation_id": "conv-123",
-  "has_results": true,
-  "source": "vector_db"
-}
-```
-
-#### POST `/api/v1/actions`
-Execute purchase or email action.
-
-**Headers**:
-- `X-User-ID`: User identifier (required)
-
-**Request Body**:
-```json
-{
-  "action": "email",
-  "product_id": "prod_001",
-  "conversation_id": "conv-123"
-}
-```
-
-## 🎨 Frontend Usage
-
-1. **Open Application**: Navigate to http://localhost:3000
-2. **Select User**: Choose from dropdown (John Doe, Jane Smith, Bob Johnson)
-3. **Enter Query**: Type what you're looking for
-4. **View Results**: Browse recommended products
-5. **Take Action**: Click "Purchase" or email icon to proceed
-
-## 🔧 Configuration
-
-### LangSmith Tracing
-
-LangSmith is integrated for monitoring and debugging AI workflows. View traces at [smith.langchain.com](https://smith.langchain.com).
-
-**Enable in `backend/.env`:**
-```bash
-LANGSMITH_TRACING=true
-LANGSMITH_API_KEY=your_langsmith_api_key
-LANGSMITH_PROJECT=ai-product-recommendation-chatbot
-```
-
-**What gets traced:**
-- Query rephrasing steps
-- Vector search operations
-- LLM reasoning chains
-- Tool execution (purchase/email)
-- Web search fallbacks
-- Response generation
-
-View detailed traces, costs, and latency metrics in the LangSmith dashboard.
-
-### Ollama Models
-
-Download additional models to your local Ollama:
-```bash
-ollama pull mistral
-ollama pull mixtral
-ollama list
-```
-
-Update `backend/.env`:
-```bash
-OLLAMA_MODEL=mistral
-```
-
-### Vector Search Tuning
-
-Adjust search parameters in `backend/.env`:
-```bash
-VECTOR_SEARCH_THRESHOLD=0.7  # Similarity threshold (0-1)
-VECTOR_SEARCH_TOP_K=5        # Number of results
-```
-
-### Rate Limiting
-
-Configure in `backend/.env`:
-```bash
-RATE_LIMIT_REQUESTS=10  # Requests per period
-RATE_LIMIT_PERIOD=60    # Period in seconds
-```
-
-## 📁 Project Structure
+## 🗂️ Project Structure
 
 ```
 product-recommendation-chatbot/
 ├── backend/
 │   ├── app/
-│   │   ├── agents/          # LangGraph workflow
-│   │   ├── api/             # FastAPI routes
-│   │   ├── database/        # DB connections
-│   │   ├── models/          # Pydantic models
-│   │   ├── services/        # Business logic
-│   │   └── utils/           # Utilities
-│   ├── data/products/       # Sample JSON data
-│   ├── scripts/             # Initialization scripts
-│   └── tests/               # Unit tests
+│   │   ├── models/
+│   │   │   ├── product.py          # ProductBase (BestBuy fields), ProductDocument
+│   │   │   ├── request.py          # ChatRequest (+ last_product_ids), ActionRequest
+│   │   │   └── user.py
+│   │   ├── database/
+│   │   │   ├── mongodb.py
+│   │   │   └── pinecone_db.py      # search_products() with metadata_filter param
+│   │   ├── services/
+│   │   │   ├── chatbot_service.py  # intent_chain, rephrase_chain, response_chain
+│   │   │   ├── data_loader.py      # BestBuy format support + category extraction
+│   │   │   ├── email_service.py
+│   │   │   └── user_service.py
+│   │   ├── api/
+│   │   │   └── routes.py           # /chat passes last_product_ids to service
+│   │   └── config.py
+│   ├── data/
+│   │   ├── products/               # BestBuy JSON files (laptops.json, headphones.json)
+│   │   └── categories.json         # Auto-generated by load_products.py
+│   └── scripts/
+│       ├── init_db.py
+│       └── load_products.py        # Loads products + saves categories.json
 ├── frontend/
 │   └── src/
-│       ├── components/      # React components
-│       ├── hooks/           # Custom hooks
-│       └── services/        # API client
-└── docker-compose.yml       # Orchestration
+│       ├── components/
+│       │   ├── ChatInterface.jsx   # Passes userName to useChat
+│       │   ├── MessageList.jsx
+│       │   ├── InputBox.jsx
+│       │   └── ProductCard.jsx
+│       ├── hooks/
+│       │   └── useChat.js          # Optimistic message, lastProductIds tracking
+│       └── services/
+│           └── api.js              # sendMessage includes last_product_ids
+├── docker-compose.yml
+└── README.md
 ```
 
-## 🐛 Troubleshooting
+---
 
-### Ollama Connection Issues
+## 🔍 LangSmith Tracing
 
-```bash
-# Check if Ollama is running locally
-curl http://localhost:11434/api/tags
+Every chain execution is automatically traced. View at https://smith.langchain.com.
 
-# Verify models are installed
-ollama list
+**Trace structure per request:**
+```
+User query: "email me the MacBook"
+├─ intent_chain      → { intent: "email", product_hint: "MacBook" }  (0.8s)
+│
+└─ execute_action    → email sent to kai@example.com                  (0.3s)
 
-# Pull required models
-ollama pull gpt-oss:20b
-ollama pull nomic-embed-text
-
-# If running backend in Docker, ensure host.docker.internal is accessible
-# On Linux, you may need to use --add-host=host.docker.internal:host-gateway
+─────────────────────────────────────────────────────
+User query: "laptops on sale under $2000"
+├─ intent_chain      → { intent: "search" }                          (0.7s)
+├─ rephrase_chain    → { rephrased: "...", filter: {...} }            (1.1s)
+├─ MongoDB           → user: Kai He                                   (0.1s)
+├─ Pinecone search   → 4 products (with filter)                       (0.6s)
+└─ response_chain    → friendly message + CTA                         (2.0s)
 ```
 
-### Pinecone Connection Issues
+---
 
-- Verify API key in `.env`
-- Check index name matches configuration
-- Ensure dimension matches embedding model (384 for nomic-embed-text)
+## 🛠️ Troubleshooting
 
-### MongoDB Connection Issues
+**No products returned despite correct query:**
+- Check `categories.json` exists in `backend/data/` — if missing, re-run `load_products.py`
+- Verify Pinecone index has vectors: check `/api/v1/health` and Pinecone dashboard
+- Lower `SEARCH_THRESHOLD` in `.env` (default 0.5)
 
-```bash
-# Check MongoDB status
-docker exec -it mongodb mongosh
+**Intent always resolves to "search":**
+- This is the safe default — confirm `last_product_ids` is being sent from the frontend
+- Check LangSmith trace for the `intent_chain` output
 
-# List databases
-show dbs
+**Email not sending:**
+- Verify SMTP credentials in `.env`
+- The service logs the error but returns a graceful failure message
 
-# Check collections
-use product_chatbot
-show collections
+**Categories not filtering:**
+- Delete and regenerate `categories.json` by re-running `load_products.py`
+- Check the rephrase chain output in LangSmith for the `filter` field
+
+---
+
+## 📝 Environment Variables
+
+```env
+# Pinecone
+PINECONE_API_KEY=your_key
+PINECONE_INDEX_NAME=product-recommendations
+PINECONE_DIMENSION=768
+PINECONE_NAMESPACE=products
+
+# Ollama
+OLLAMA_BASE_URL=http://ollama:11434
+OLLAMA_MODEL=gpt-oss:20b
+OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+
+# MongoDB
+MONGODB_URL=mongodb://mongodb:27017
+MONGODB_DB_NAME=chatbot
+
+# Tavily (optional)
+TAVILY_API_KEY=your_key
+
+# LangSmith (optional)
+LANGSMITH_API_KEY=your_key
+LANGSMITH_PROJECT=product-chatbot
+LANGSMITH_TRACING=true
+
+# Search
+SEARCH_TOP_K=5
+SEARCH_THRESHOLD=0.5
+
+# SMTP (optional)
+SMTP_HOST=smtp.gmail.com
+SMTP_PORT=587
+SMTP_USER=your@email.com
+SMTP_PASSWORD=your_password
+SMTP_FROM=your@email.com
 ```
-
-## 🔐 Security Considerations
-
-- **API Keys**: Never commit `.env` files
-- **CORS**: Configure `CORS_ORIGINS` for production
-- **Rate Limiting**: Enabled by default
-- **Input Validation**: All inputs validated with Pydantic
-- **HTTPS**: Use reverse proxy (nginx/Traefik) in production
-
-## 📈 Performance Optimization
-
-- **Connection Pooling**: MongoDB and HTTP clients use connection pools
-- **Caching**: Vector search results can be cached (implement Redis)
-- **Async**: All I/O operations are async
-- **Batch Processing**: Load products in batches
-
-## 🚀 Deployment
-
-### Production Checklist
-
-- [ ] Update `ENVIRONMENT=production` in `.env`
-- [ ] Set `DEBUG=false`
-- [ ] Configure production CORS origins
-- [ ] Use production database URLs
-- [ ] Enable HTTPS
-- [ ] Set up monitoring (Prometheus/Grafana)
-- [ ] Configure log aggregation (ELK/Loki)
-- [ ] Set up backup strategy for MongoDB
-
-### Kubernetes Deployment
-
-See `k8s/` directory for Kubernetes manifests (create if needed).
-
-## 📄 License
-
-This project is licensed under the MIT License.
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests
-5. Submit a pull request
-
-## 📧 Support
-
-For issues and questions:
-- Open a GitHub issue
-- Check existing documentation
-- Review API documentation at `/docs`
-
-## 🙏 Acknowledgments
-
-- LangChain & LangGraph teams
-- Anthropic for Claude
-- Pinecone for vector database
-- FastAPI community
-- React community

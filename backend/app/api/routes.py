@@ -24,7 +24,6 @@ from app.services.user_service import user_service
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
-# Create router
 router = APIRouter(prefix=settings.api_prefix)
 
 
@@ -32,10 +31,7 @@ router = APIRouter(prefix=settings.api_prefix)
 async def health_check() -> HealthResponse:
     """Health check endpoint."""
     try:
-        # Check MongoDB
         mongodb_status = "connected" if mongodb.db else "disconnected"
-
-        # Check Pinecone
         pinecone_status = "connected" if pinecone_db.client else "disconnected"
 
         return HealthResponse(
@@ -65,10 +61,7 @@ async def create_user(user: UserCreate) -> UserResponse:
         created_user = await user_service.create_user(user)
         return UserResponse(**created_user.model_dump())
     except ValueError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(e),
-        )
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     except Exception as e:
         logger.error(f"Error creating user: {e}")
         raise HTTPException(
@@ -94,8 +87,12 @@ async def chat(
     request: ChatRequest,
     user_id: str = Header(..., alias="X-User-ID"),
 ) -> ChatResponse:
-    """
-    Main chat endpoint for product recommendations.
+    """Main chat endpoint for product recommendations.
+
+    The workflow now has three phases:
+    1. Intent detection — LLM determines if the user wants to search, email, or purchase.
+    2. If 'email'/'purchase' and last_product_ids are provided, executes the action directly.
+    3. Otherwise, rephrases the query (with metadata filter extraction) and searches Pinecone.
 
     Headers:
         X-User-ID: User identifier
@@ -103,9 +100,9 @@ async def chat(
     Body:
         query: User's product search query
         conversation_id: Optional conversation ID
+        last_product_ids: SKUs from the most recent assistant response (for action detection)
     """
     try:
-        # Validate user exists
         user = await user_service.get_user(user_id)
         if not user:
             raise HTTPException(
@@ -113,17 +110,15 @@ async def chat(
                 detail=f"User not found: {user_id}",
             )
 
-        # Generate conversation ID if not provided
         conversation_id = request.conversation_id or str(uuid.uuid4())
 
-        # Execute chatbot workflow using LangChain
         result = await chatbot_service.execute_query(
             user_query=request.query,
             user_id=user_id,
             conversation_id=conversation_id,
+            last_product_ids=request.last_product_ids,
         )
 
-        # Handle errors from workflow
         if result.get("error"):
             logger.warning(f"Workflow error: {result['error']}")
 
@@ -150,19 +145,21 @@ async def execute_action(
     request: ActionRequest,
     user_id: str = Header(..., alias="X-User-ID"),
 ) -> ActionResponse:
-    """
-    Execute user action (purchase or email).
+    """Execute a user action (purchase or email) on a specific product.
+
+    This endpoint is triggered by the UI's action buttons on product cards.
+    For free-text action intents ("email me that"), the /chat endpoint
+    handles them automatically via intent detection.
 
     Headers:
         X-User-ID: User identifier
 
     Body:
-        action: Action type ('purchase' or 'email')
-        product_id: Product identifier
+        action: 'purchase' or 'email'
+        product_id: Product SKU
         conversation_id: Optional conversation ID
     """
     try:
-        # Validate user exists
         user = await user_service.get_user(user_id)
         if not user:
             raise HTTPException(
@@ -170,7 +167,6 @@ async def execute_action(
                 detail=f"User not found: {user_id}",
             )
 
-        # Execute action using LangChain service
         result = await chatbot_service.execute_action(
             action=request.action,
             product_id=request.product_id,

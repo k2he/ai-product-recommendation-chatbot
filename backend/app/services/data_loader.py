@@ -9,13 +9,20 @@ from app.models.product import ProductBase
 
 logger = logging.getLogger(__name__)
 
+BESTBUY_URL_PREFIX = "https://www.bestbuy.ca"
+
 
 class DataLoader:
-    """Service for loading product data from JSON files."""
+    """Service for loading product data from BestBuy-format JSON files."""
 
     @staticmethod
     def load_json_file(file_path: str | Path) -> list[dict[str, Any]]:
-        """Load data from a single JSON file."""
+        """Load data from a single JSON file.
+
+        Supports both:
+        - New BestBuy format: { "products": [...] }
+        - Legacy format: flat array [...]
+        """
         file_path = Path(file_path)
 
         if not file_path.exists():
@@ -28,11 +35,13 @@ class DataLoader:
             with open(file_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
-            # Handle both single object and array
-            if isinstance(data, dict):
+            # Support BestBuy format: { "products": [...] }
+            if isinstance(data, dict) and "products" in data:
+                data = data["products"]
+            elif isinstance(data, dict):
                 data = [data]
             elif not isinstance(data, list):
-                raise ValueError("JSON must contain an object or array")
+                raise ValueError("JSON must contain a 'products' array, an object, or an array")
 
             logger.info(f"Loaded {len(data)} records from {file_path}")
             return data
@@ -43,6 +52,34 @@ class DataLoader:
         except Exception as e:
             logger.error(f"Error loading file {file_path}: {e}")
             raise
+
+    @staticmethod
+    def transform_bestbuy_product(raw: dict[str, Any]) -> dict[str, Any]:
+        """Transform a raw BestBuy product record into ProductBase-compatible dict.
+
+        Extracts only: sku, name, shortDescription, customerRating, productUrl,
+        regularPrice, salePrice, categoryName, and derives isOnSale.
+        """
+        # Derive isOnSale: saleEndDate is non-null means it's on sale
+        sale_end_date = raw.get("saleEndDate")
+        is_on_sale = sale_end_date is not None
+
+        # Prefix productUrl with BestBuy base URL if it's a relative path
+        product_url = raw.get("productUrl", "")
+        if product_url and not product_url.startswith("http"):
+            product_url = f"{BESTBUY_URL_PREFIX}{product_url}"
+
+        return {
+            "sku": str(raw.get("sku", "")),
+            "name": raw.get("name", ""),
+            "shortDescription": raw.get("shortDescription", ""),
+            "customerRating": raw.get("customerRating"),
+            "productUrl": product_url,
+            "regularPrice": float(raw.get("regularPrice", 0.0)),
+            "salePrice": float(raw.get("salePrice", raw.get("regularPrice", 0.0))),
+            "categoryName": raw.get("categoryName", ""),
+            "isOnSale": is_on_sale,
+        }
 
     @staticmethod
     def load_directory(directory_path: str | Path) -> list[dict[str, Any]]:
@@ -75,13 +112,14 @@ class DataLoader:
 
     @staticmethod
     def validate_and_parse_products(data: list[dict[str, Any]]) -> list[ProductBase]:
-        """Validate and parse raw data into Product models."""
+        """Validate and parse raw BestBuy data into ProductBase models."""
         products = []
         errors = []
 
         for idx, item in enumerate(data):
             try:
-                product = ProductBase(**item)
+                transformed = DataLoader.transform_bestbuy_product(item)
+                product = ProductBase(**transformed)
                 products.append(product)
             except Exception as e:
                 errors.append(f"Record {idx}: {str(e)}")
@@ -92,6 +130,13 @@ class DataLoader:
 
         logger.info(f"Successfully validated {len(products)} products")
         return products
+
+    @staticmethod
+    def extract_unique_categories(products: list[ProductBase]) -> list[str]:
+        """Extract sorted list of unique categoryName values from products."""
+        categories = sorted({p.categoryName for p in products if p.categoryName})
+        logger.info(f"Found {len(categories)} unique categories")
+        return categories
 
     @staticmethod
     async def load_products_from_directory(directory_path: str | Path) -> list[ProductBase]:
