@@ -60,7 +60,8 @@ const InputBox = ({ onSend, loading, disabled }) => {
           </button>
         </div>
         <p className="text-xs text-gray-500 mt-2">
-          Try: "I need a large screen gaming monitor under $300"
+          Try: "I am looking for a gaming monitor under $300"
+          or "I am looking for a gaming monitor and a Smartwatches both should be under $300"
         </p>
       </form>
     </div>
