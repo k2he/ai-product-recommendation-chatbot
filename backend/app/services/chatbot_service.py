@@ -267,6 +267,212 @@ Generate response:"""
             source="web_search",
         )
 
+    async def _detect_intent(
+        self,
+        user_query: str,
+        last_product_ids: list[str],
+    ) -> tuple[str, Optional[str]]:
+        """Detect user intent and extract product hint.
+
+        Returns:
+            Tuple of (intent, product_hint)
+        """
+        # Resolve product names for the intent prompt context
+        last_product_names = "none"
+        if last_product_ids:
+            fetched_names = []
+            for pid in last_product_ids[:3]:
+                p = await pinecone_db.get_product_by_id(pid)
+                if p:
+                    fetched_names.append(p.name)
+            if fetched_names:
+                last_product_names = ", ".join(fetched_names)
+
+        try:
+            intent_response = await self.intent_chain.ainvoke({
+                "query": user_query,
+                "last_product_names": last_product_names,
+            })
+            intent = intent_response.intent.value
+            product_hint = intent_response.product_hint
+        except Exception as e:
+            logger.warning(f"Intent detection failed, defaulting to 'search': {e}")
+            intent, product_hint = "search", None
+
+        logger.info(f"Intent: '{intent}' | product_hint: '{product_hint}'")
+        return intent, product_hint
+
+    async def _resolve_target_product_id(
+        self,
+        last_product_ids: list[str],
+        product_hint: Optional[str],
+    ) -> str:
+        """Resolve which product ID to use for email/purchase actions.
+
+        If product_hint is provided and matches one of the last products,
+        use that. Otherwise, use the first product.
+        """
+        target_id = last_product_ids[0]
+
+        if product_hint and len(last_product_ids) > 1:
+            for pid in last_product_ids:
+                p = await pinecone_db.get_product_by_id(pid)
+                if p and product_hint.lower() in p.name.lower():
+                    target_id = pid
+                    break
+
+        return target_id
+
+    async def _handle_action_intent(
+        self,
+        intent: str,
+        product_hint: Optional[str],
+        last_product_ids: list[str],
+        user_id: str,
+        conversation_id: str,
+    ) -> Optional[dict[str, Any]]:
+        """Handle email or purchase intent.
+
+        Returns:
+            Response dict if action was executed, None if intent is not email/purchase
+        """
+        if intent not in ("email", "purchase") or not last_product_ids:
+            return None
+
+        target_id = await self._resolve_target_product_id(last_product_ids, product_hint)
+
+        action_result = await self.execute_action(
+            action=IntentType(intent),
+            product_id=target_id,
+            user_id=user_id,
+        )
+
+        return {
+            "message": action_result["message"],
+            "products": [],
+            "conversation_id": conversation_id,
+            "has_results": False,
+            "source": "action",
+            "error": None if action_result["success"] else action_result.get("error"),
+        }
+
+    async def _handle_search_workflow(
+        self,
+        user_query: str,
+        user_id: str,
+        conversation_id: str,
+    ) -> dict[str, Any]:
+        """Handle the search workflow (Steps 1-4).
+
+        Returns:
+            Response dict with search results and generated message
+        """
+        # ── Step 1: User info ──────────────────────────────────────────────
+        logger.info(f"Step 1: Retrieving user info for: {user_id}")
+        user_info = await self._get_user_info(user_id)
+        user_name = user_info.firstName if user_info and user_info.firstName else "there"
+
+        # ── Step 2: SelfQueryingRetriever ─────────────────────────────────
+        logger.info("Step 2: Running SelfQueryingRetriever")
+        products = await self._run_sqr(user_query)
+        search_source = "vector_db" if products else "none"
+        logger.info(f"SQR returned {len(products)} products")
+
+        # ── Step 3: Web search fallback ────────────────────────────────────
+        if not products and self.tavily:
+            logger.info("Step 3: Falling back to Tavily web search")
+            web_results = await self._web_search(user_query)
+            if web_results:
+                return {
+                    "message": await self._generate_web_response(user_name, web_results),
+                    "products": [],
+                    "conversation_id": conversation_id,
+                    "has_results": True,
+                    "source": "web_search",
+                    "error": None,
+                }
+
+        # ── Step 4: Generate response ──────────────────────────────────────
+        logger.info("Step 4: Generating response")
+        response_message = await self._generate_response(
+            user_name=user_name,
+            products=products,
+            has_results=bool(products),
+            source=search_source,
+        )
+
+        logger.info(f"Workflow complete — {len(products)} products returned")
+        return {
+            "message": response_message,
+            "products": products,
+            "conversation_id": conversation_id,
+            "has_results": bool(products),
+            "source": search_source,
+            "error": None,
+        }
+
+    async def _execute_email_action(
+        self,
+        user_name: str,
+        user_email: str,
+        product: Product,
+    ) -> dict[str, Any]:
+        """Execute email action - send product details to user.
+
+        Returns:
+            Action result dict with success status and message
+        """
+        try:
+            await email_service.send_product_email(
+                recipient_email=user_email,
+                recipient_name=user_name,
+                product=product,
+            )
+            return {
+                "success": True,
+                "message": (
+                    f"Done, {user_name}! I've sent the details for "
+                    f"**{product.name}** to {user_email}. Check your inbox! 📧"
+                ),
+                "details": {"email": user_email, "product_name": product.name},
+            }
+        except Exception as e:
+            logger.error(f"Email sending failed: {e}")
+            return {
+                "success": False,
+                "message": "Failed to send email. Please try again.",
+                "error": str(e),
+            }
+
+    async def _execute_purchase_action(
+        self,
+        user_name: str,
+        user_email: str,
+        product: Product,
+        product_id: str,
+        user_id: str,
+    ) -> dict[str, Any]:
+        """Execute purchase action - place order for product.
+
+        Returns:
+            Action result dict with success status and message
+        """
+        order_id = f"ORD-{product_id}-{user_id[-4:]}"
+        return {
+            "success": True,
+            "message": (
+                f"Great choice, {user_name}! Your order for **{product.name}** "
+                f"has been placed. Order ID: `{order_id}`. "
+                f"Total: ${product.salePrice:.2f} CAD. "
+                f"A confirmation will be sent to {user_email}. 🛒"
+            ),
+            "details": {
+                "order_id": order_id,
+                "product_name": product.name,
+                "price": product.salePrice,
+            },
+        }
+
     # ── Public API ─────────────────────────────────────────────────────────────
 
     async def execute_query(
@@ -296,99 +502,17 @@ Generate response:"""
             logger.info("Step 0: Detecting intent")
             last_product_ids = last_product_ids or []
 
-            # Resolve product names for the intent prompt context
-            last_product_names = "none"
-            if last_product_ids:
-                fetched_names = []
-                for pid in last_product_ids[:3]:
-                    p = await pinecone_db.get_product_by_id(pid)
-                    if p:
-                        fetched_names.append(p.name)
-                if fetched_names:
-                    last_product_names = ", ".join(fetched_names)
-
-            try:
-                intent_response = await self.intent_chain.ainvoke({
-                    "query": user_query,
-                    "last_product_names": last_product_names,
-                })
-                intent = intent_response.intent.value  # Get the string value from enum
-                product_hint = intent_response.product_hint
-            except Exception as e:
-                logger.warning(f"Intent detection failed, defaulting to 'search': {e}")
-                intent, product_hint = "search", None
-
-            logger.info(f"Intent: '{intent}' | product_hint: '{product_hint}'")
+            intent, product_hint = await self._detect_intent(user_query, last_product_ids)
 
             # ── Intent branch: email or purchase ───────────────────────────────
-            if intent in ("email", "purchase") and last_product_ids:
-                target_id = last_product_ids[0]
-                if product_hint and len(last_product_ids) > 1:
-                    for pid in last_product_ids:
-                        p = await pinecone_db.get_product_by_id(pid)
-                        if p and product_hint.lower() in p.name.lower():
-                            target_id = pid
-                            break
-
-                action_result = await self.execute_action(
-                    action=IntentType(intent),
-                    product_id=target_id,
-                    user_id=user_id,
-                )
-                return {
-                    "message": action_result["message"],
-                    "products": [],
-                    "conversation_id": conversation_id,
-                    "has_results": False,
-                    "source": "action",
-                    "error": None if action_result["success"] else action_result.get("error"),
-                }
-
-            # ── Step 1: User info ──────────────────────────────────────────────
-            logger.info(f"Step 1: Retrieving user info for: {user_id}")
-            user_info = await self._get_user_info(user_id)
-            user_name = user_info.firstName if user_info and user_info.firstName else "there"
-
-            # ── Step 2: SelfQueryingRetriever ─────────────────────────────────
-            # A single LLM call decomposes the query into (semantic string, filter),
-            # then runs the filtered Pinecone vector search. No manual JSON parsing.
-            logger.info("Step 2: Running SelfQueryingRetriever")
-            products = await self._run_sqr(user_query)
-            search_source = "vector_db" if products else "none"
-            logger.info(f"SQR returned {len(products)} products")
-
-            # ── Step 3: Web search fallback ────────────────────────────────────
-            if not products and self.tavily:
-                logger.info("Step 3: Falling back to Tavily web search")
-                web_results = await self._web_search(user_query)
-                if web_results:
-                    return {
-                        "message": await self._generate_web_response(user_name, web_results),
-                        "products": [],
-                        "conversation_id": conversation_id,
-                        "has_results": True,
-                        "source": "web_search",
-                        "error": None,
-                    }
-
-            # ── Step 4: Generate response ──────────────────────────────────────
-            logger.info("Step 4: Generating response")
-            response_message = await self._generate_response(
-                user_name=user_name,
-                products=products,
-                has_results=bool(products),
-                source=search_source,
+            action_response = await self._handle_action_intent(
+                intent, product_hint, last_product_ids, user_id, conversation_id
             )
+            if action_response:
+                return action_response
 
-            logger.info(f"Workflow complete — {len(products)} products returned")
-            return {
-                "message": response_message,
-                "products": products,
-                "conversation_id": conversation_id,
-                "has_results": bool(products),
-                "source": search_source,
-                "error": None,
-            }
+            # ── Search workflow ────────────────────────────────────────────────
+            return await self._handle_search_workflow(user_query, user_id, conversation_id)
 
         except Exception as e:
             logger.error(f"Workflow error: {e}")
@@ -407,12 +531,23 @@ Generate response:"""
         product_id: str,
         user_id: str,
     ) -> dict[str, Any]:
-        """Execute an email or purchase action for a specific product."""
+        """Execute an email or purchase action for a specific product.
+
+        Args:
+            action: The action to perform (EMAIL or PURCHASE)
+            product_id: Product SKU
+            user_id: User ID
+
+        Returns:
+            Action result dict with success status, message, and optional details
+        """
         try:
+            # Validate user exists
             user_info = await self._get_user_info(user_id)
             if not user_info:
                 return {"success": False, "message": "User not found.", "error": "user_not_found"}
 
+            # Validate product exists
             product = await pinecone_db.get_product_by_id(product_id)
             if not product:
                 return {
@@ -421,50 +556,25 @@ Generate response:"""
                     "error": "product_not_found",
                 }
 
+            # Extract user info
             user_name = user_info.firstName if user_info.firstName else "there"
             user_email = user_info.email
 
+            # Execute action based on intent
             if action == IntentType.EMAIL:
-                try:
-                    await email_service.send_product_email(
-                        recipient_email=user_email,
-                        recipient_name=user_name,
-                        product=product,
-                    )
-                    return {
-                        "success": True,
-                        "message": (
-                            f"Done, {user_name}! I've sent the details for "
-                            f"**{product.name}** to {user_email}. Check your inbox! 📧"
-                        ),
-                        "details": {"email": user_email, "product_name": product.name},
-                    }
-                except Exception as e:
-                    logger.error(f"Email sending failed: {e}")
-                    return {
-                        "success": False,
-                        "message": "Failed to send email. Please try again.",
-                        "error": str(e),
-                    }
+                return await self._execute_email_action(user_name, user_email, product)
 
             elif action == IntentType.PURCHASE:
-                order_id = f"ORD-{product_id}-{user_id[-4:]}"
-                return {
-                    "success": True,
-                    "message": (
-                        f"Great choice, {user_name}! Your order for **{product.name}** "
-                        f"has been placed. Order ID: `{order_id}`. "
-                        f"Total: ${product.salePrice:.2f} CAD. "
-                        f"A confirmation will be sent to {user_email}. 🛒"
-                    ),
-                    "details": {
-                        "order_id": order_id,
-                        "product_name": product.name,
-                        "price": product.salePrice,
-                    },
-                }
+                return await self._execute_purchase_action(
+                    user_name, user_email, product, product_id, user_id
+                )
 
-            return {"success": False, "message": f"Unknown action: {action}", "error": "unknown_action"}
+            else:
+                return {
+                    "success": False,
+                    "message": f"Unknown action: {action}",
+                    "error": "unknown_action"
+                }
 
         except Exception as e:
             logger.error(f"Action error ({action}): {e}")
