@@ -8,6 +8,7 @@ from langchain.retrievers.self_query.base import SelfQueryRetriever
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
+from pinecone_text.sparse import BM25Encoder
 
 from app.config import get_settings
 from app.models.product import Product, ProductBase, ProductDocument
@@ -57,16 +58,17 @@ _DOCUMENT_CONTENT_DESCRIPTION = (
 
 
 class PineconeDB:
-    """Pinecone vector database manager."""
+    """Pinecone vector database manager with hybrid search support."""
 
     def __init__(self) -> None:
         self.client: Optional[Pinecone] = None
         self.index = None
         self.embeddings: Optional[OllamaEmbeddings] = None
         self.vectorstore: Optional[PineconeVectorStore] = None
+        self.bm25_encoder: Optional[BM25Encoder] = None
 
     async def connect(self) -> None:
-        """Connect to Pinecone and initialise the vectorstore."""
+        """Connect to Pinecone and initialise the vectorstore with hybrid search support."""
         try:
             self.client = Pinecone(api_key=settings.pinecone_api_key)
 
@@ -74,6 +76,10 @@ class PineconeDB:
                 base_url=settings.ollama_base_url,
                 model=settings.ollama_embedding_model,
             )
+
+            # Initialize BM25 encoder for sparse vectors (hybrid search)
+            self.bm25_encoder = BM25Encoder()
+            logger.info("Initialized BM25Encoder for hybrid search")
 
             existing_indexes = [idx.name for idx in self.client.list_indexes()]
 
@@ -87,12 +93,15 @@ class PineconeDB:
                     existing_indexes.remove(settings.pinecone_index_name)
 
             if settings.pinecone_index_name not in existing_indexes:
-                logger.info(f"Creating Pinecone index: {settings.pinecone_index_name}")
+                logger.info(f"Creating Pinecone index with hybrid search support: {settings.pinecone_index_name}")
                 self.client.create_index(
                     name=settings.pinecone_index_name,
                     dimension=settings.pinecone_dimension,
                     metric=settings.pinecone_metric,
-                    spec=ServerlessSpec(cloud="aws", region="us-east-1"),
+                    spec=ServerlessSpec(
+                        cloud="aws",
+                        region="us-east-1"
+                    ),
                 )
 
             self.vectorstore = PineconeVectorStore(
@@ -100,10 +109,11 @@ class PineconeDB:
                 embedding=self.embeddings,
                 pinecone_api_key=settings.pinecone_api_key,
                 namespace=settings.pinecone_namespace,
+                sparse_encoder=self.bm25_encoder,  # Enable automatic hybrid search
             )
 
             self.index = self.client.Index(settings.pinecone_index_name)
-            logger.info(f"Connected to Pinecone index: {settings.pinecone_index_name}")
+            logger.info(f"Connected to Pinecone index with hybrid search: {settings.pinecone_index_name}")
 
         except Exception as e:
             logger.error(f"Failed to connect to Pinecone: {e}")
@@ -174,21 +184,155 @@ class PineconeDB:
 
     # ── Product ingestion ──────────────────────────────────────────────────────
 
+    def fit_bm25_encoder(self, texts: list[str]) -> None:
+        """Fit the BM25 encoder on a corpus of texts.
+
+        This calculates IDF (Inverse Document Frequency) weights based on the
+        provided corpus, enabling domain-specific keyword matching.
+
+        Args:
+            texts: List of text documents to train on (typically all product descriptions)
+
+        Note:
+            - Should be called ONCE on the full product corpus before adding products
+            - Alternative: Use BM25Encoder.default() for generic pre-trained weights
+            - Custom fitting provides better results for domain-specific data
+        """
+        if not self.bm25_encoder:
+            logger.warning("BM25Encoder not initialized, skipping fit")
+            return
+
+        if hasattr(self.bm25_encoder, 'idf_'):
+            logger.info("BM25Encoder already fitted, skipping")
+            return
+
+        logger.info(f"Fitting BM25Encoder on {len(texts)} documents...")
+        self.bm25_encoder.fit(texts)
+        logger.info("BM25Encoder fitted successfully with domain-specific IDF weights")
+
     async def add_products(self, products: list[ProductBase]) -> None:
-        """Embed and upsert products into Pinecone."""
-        if not self.vectorstore:
+        """Embed and upsert products into Pinecone with hybrid search support.
+
+        Since sparse_encoder is set on the vectorstore, it automatically generates
+        both dense (semantic) and sparse (BM25) vectors during upsert.
+
+        Note:
+            BM25 encoder must be fitted before calling this method. You can either:
+            1. Call fit_bm25_encoder() explicitly with the full corpus
+            2. Let this method auto-fit on the current batch (not ideal for multiple batches)
+        """
+        if not self.vectorstore or not self.index:
             raise ConnectionError("Vectorstore not initialised.")
+
         try:
             documents = [ProductDocument.from_product(p) for p in products]
-            self.vectorstore.add_texts(
-                texts=[d.text for d in documents],
-                metadatas=[d.metadata for d in documents],
-                ids=[d.product_id for d in documents],
+            texts = [d.text for d in documents]
+            metadatas = [d.metadata for d in documents]
+            ids = [d.product_id for d in documents]
+
+            # Auto-fit BM25 encoder if not already fitted (convenience fallback)
+            # For best results, call fit_bm25_encoder() explicitly on the full corpus
+            if self.bm25_encoder and not hasattr(self.bm25_encoder, 'idf_'):
+                logger.warning(
+                    "BM25Encoder not fitted yet - auto-fitting on current batch. "
+                    "For optimal results, call fit_bm25_encoder() on the full corpus first."
+                )
+                self.fit_bm25_encoder(texts)
+
+            # Use vectorstore.add_texts() which automatically handles hybrid search
+            # when sparse_encoder is configured
+            await self.vectorstore.aadd_texts(
+                texts=texts,
+                metadatas=metadatas,
+                ids=ids,
             )
-            logger.info(f"Added {len(products)} products to Pinecone")
+
+            logger.info(f"Added {len(products)} products to Pinecone with hybrid search vectors")
+
         except Exception as e:
             logger.error(f"Failed to add products to Pinecone: {e}")
             raise
+
+    async def hybrid_search(
+        self,
+        query: str,
+        filter: Optional[dict] = None,
+        top_k: int = 5,
+        alpha: Optional[float] = None,
+    ) -> list[dict]:
+        """Perform hybrid search combining dense and sparse vectors.
+
+        Args:
+            query: Search query text
+            filter: Pinecone metadata filter
+            top_k: Number of results to return
+            alpha: Weight for dense vs sparse (0.0=sparse only, 1.0=dense only)
+                   If None, uses settings.hybrid_search_alpha
+
+        Returns:
+            List of search results with metadata
+        """
+        if not self.index or not self.embeddings:
+            raise ConnectionError("Index not initialised.")
+
+        try:
+            # Use configured alpha if not provided
+            if alpha is None:
+                alpha = settings.hybrid_search_alpha
+
+            # Generate dense vector (semantic embedding)
+            dense_vector = await self.embeddings.aembed_query(query)
+
+            # Generate sparse vector (BM25/keyword)
+            sparse_vector = None
+            if self.bm25_encoder:
+                sparse_dict = self.bm25_encoder.encode_queries([query])[0]
+                sparse_vector = {
+                    "indices": sparse_dict["indices"],
+                    "values": sparse_dict["values"]
+                }
+
+            # Perform hybrid search
+            search_kwargs = {
+                "namespace": settings.pinecone_namespace,
+                "top_k": top_k,
+                "include_metadata": True,
+            }
+
+            # Add filter if provided
+            if filter:
+                search_kwargs["filter"] = filter
+
+            # Query with both dense and sparse vectors
+            if sparse_vector:
+                results = self.index.query(
+                    vector=dense_vector,
+                    sparse_vector=sparse_vector,
+                    **search_kwargs
+                )
+                logger.info(f"Hybrid search returned {len(results.matches)} results (alpha={alpha})")
+            else:
+                # Fallback to dense-only if sparse not available
+                results = self.index.query(
+                    vector=dense_vector,
+                    **search_kwargs
+                )
+                logger.info(f"Dense-only search returned {len(results.matches)} results")
+
+            # Convert results to list of dicts
+            matches = []
+            for match in results.matches:
+                matches.append({
+                    "id": match.id,
+                    "score": match.score,
+                    "metadata": match.metadata or {},
+                })
+
+            return matches
+
+        except Exception as e:
+            logger.error(f"Hybrid search failed: {e}")
+            return []
 
     # ── Point lookup ───────────────────────────────────────────────────────────
 

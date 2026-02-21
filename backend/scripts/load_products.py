@@ -69,6 +69,13 @@ async def load_products():
             logger.info("Clearing existing products...")
             await pinecone_db.clear_index()
 
+        # Fit BM25 encoder on the full corpus for domain-specific keyword matching
+        # This learns IDF weights from all products, providing better hybrid search results
+        # than using the generic BM25Encoder.default()
+        from app.models.product import ProductDocument
+        texts = [ProductDocument.from_product(p).text for p in products]
+        pinecone_db.fit_bm25_encoder(texts)
+
         logger.info("Adding products to Pinecone...")
         await pinecone_db.add_products(products)
 
