@@ -103,6 +103,7 @@ class ChatResponse(BaseModel):
                 "source": "vector_db",
             }
         }
+    }
 
 
 class ActionResponse(BaseModel):

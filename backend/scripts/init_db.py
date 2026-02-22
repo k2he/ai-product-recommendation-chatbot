@@ -7,7 +7,7 @@ import asyncio
 import logging
 
 from app.database.mongodb import mongodb
-from app.models.user import UserCreate
+from app.models.user import UserInDB
 from app.services.user_service import user_service
 from app.utils.logger import setup_logging
 
@@ -25,21 +25,21 @@ async def init_databases() -> None:
 
         # Create sample users
         sample_users = [
-            UserCreate(
+            UserInDB(
                 userId="user_001",
                 firstName="Kai",
                 lastName="He",
                 email="kai.he@example.com",
                 phone="+1234567890",
             ),
-            UserCreate(
+            UserInDB(
                 userId="user_002",
                 firstName="Jane",
                 lastName="Smith",
                 email="jane.smith@example.com",
                 phone="+1234567891",
             ),
-            UserCreate(
+            UserInDB(
                 userId="user_003",
                 firstName="Bob",
                 lastName="Johnson",

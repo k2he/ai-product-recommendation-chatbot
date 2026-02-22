@@ -4,7 +4,7 @@ import logging
 from typing import Optional
 
 from app.database.mongodb import mongodb
-from app.models.user import UserCreate, UserInDB, UserUpdate
+from app.models.user import UserInDB
 
 logger = logging.getLogger(__name__)
 
@@ -13,7 +13,7 @@ class UserService:
     """User service for handling user-related operations."""
 
     @staticmethod
-    async def create_user(user: UserCreate) -> UserInDB:
+    async def create_user(user: UserInDB) -> UserInDB:
         """Create a new user."""
         try:
             return await mongodb.create_user(user)
@@ -43,7 +43,7 @@ class UserService:
             return None
 
     @staticmethod
-    async def update_user(user_id: str, user_update: UserUpdate) -> Optional[UserInDB]:
+    async def update_user(user_id: str, user_update: UserInDB) -> Optional[UserInDB]:
         """Update user information."""
         try:
             return await mongodb.update_user(user_id, user_update)

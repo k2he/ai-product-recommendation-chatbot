@@ -11,14 +11,11 @@ from app.models.request import (
     IntentResponse,
     IntentType,
 )
-from app.models.user import UserCreate, UserInDB, UserResponse, UserUpdate
+from app.models.user import UserInDB
 
 __all__ = [
     # User models
-    "UserCreate",
-    "UserUpdate",
     "UserInDB",
-    "UserResponse",
     # Product models
     "Product",
     "ProductBase",

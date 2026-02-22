@@ -15,6 +15,7 @@ from app.models.request import (
     ChatResponse,
     HealthResponse,
 )
+from app.services import user_service
 from app.services.chatbot_service import chatbot_service
 
 logger = logging.getLogger(__name__)

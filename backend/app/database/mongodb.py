@@ -8,7 +8,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo.errors import ConnectionFailure, DuplicateKeyError
 
 from app.config import get_settings
-from app.models.user import UserCreate, UserInDB, UserUpdate
+from app.models.user import UserInDB
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -62,7 +62,7 @@ class MongoDB:
             )
             logger.info("MongoDB indexes created")
 
-    async def create_user(self, user: UserCreate) -> UserInDB:
+    async def create_user(self, user: UserInDB) -> UserInDB:
         """Create a new user."""
         if self.db is None:
             raise ConnectionError("Database not connected")
@@ -110,7 +110,7 @@ class MongoDB:
             return UserInDB(**user_data)
         return None
 
-    async def update_user(self, user_id: str, user_update: UserUpdate) -> Optional[UserInDB]:
+    async def update_user(self, user_id: str, user_update: UserInDB) -> Optional[UserInDB]:
         """Update user information."""
         if not self.db:
             raise ConnectionError("Database not connected")
