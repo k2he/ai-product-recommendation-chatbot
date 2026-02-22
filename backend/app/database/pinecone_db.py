@@ -3,8 +3,8 @@
 import logging
 from typing import Any, Optional
 
-from langchain.chains.query_constructor.base import AttributeInfo
-from langchain.retrievers.self_query.base import SelfQueryRetriever
+from langchain_classic.chains.query_constructor.schema import AttributeInfo
+from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
