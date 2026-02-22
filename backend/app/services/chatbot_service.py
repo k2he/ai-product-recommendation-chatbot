@@ -18,6 +18,7 @@ from langchain.retrievers.self_query.base import SelfQueryRetriever
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_ollama import ChatOllama
+from langchain.agents import create_agent
 
 from app.config import get_settings
 from app.database.mongodb import mongodb
@@ -26,6 +27,7 @@ from app.models import UserInDB
 from app.models.product import Product
 from app.models.request import IntentResponse, IntentType
 from app.services.email_service import email_service
+from app.services.tavily_service import search_web, tavily_service
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -65,19 +67,29 @@ class ChatbotService:
 
         # ── Chain 1: Intent Detection (with Structured Output) ────────────────
         intent_prompt = PromptTemplate.from_template(
-            """Classify the user's intent for a product recommendation chatbot.
+            """Classify the user's intent for a shopping assistant chatbot.
 
-INTENT MEANINGS:
-• Browsing/searching for products or asking questions
-• Requesting product details via email (e.g. "send it to me", "email that")
-• Wanting to purchase/order a product (e.g. "I'll take it", "buy the Sony ones")
+INTENT TYPES:
+• search - User is searching for products or asking about product availability
+  Examples: "show me laptops", "do you have wireless headphones", "gaming monitors under $500"
+
+• email - User wants product details sent via email
+  Examples: "send it to me", "email that", "can you email me the laptop specs"
+
+• purchase - User wants to buy/order a product
+  Examples: "I'll take it", "buy the Sony ones", "order that headset"
+
+• general_chat - User is making conversation OR asking non-product questions
+  Examples: "how are you", "tell me a joke", "good morning", "thank you",
+            "what's the weather in Toronto", "who won the Super Bowl", "latest tech news"
 
 CONTEXT:
 Previously shown products: {last_product_names}
 
-INSTRUCTIONS:
-- Choose the most appropriate intent (default to the first if ambiguous)
-- Extract any specific product name mentioned, or leave blank if none
+RULES:
+- Default to 'search' if the query mentions ANY product-related keywords
+- Use 'general_chat' for ALL non-product queries (greetings, jokes, factual questions)
+- Extract product name hint if mentioned (for email/purchase intents)
 
 USER MESSAGE: {query}"""
         )
@@ -88,7 +100,7 @@ USER MESSAGE: {query}"""
 
         # ── Chain 2: Response Generation ───────────────────────────────────────
         response_prompt = PromptTemplate.from_template(
-            """Generate a friendly product recommendation response for BestBuy Canada.
+            """Generate a friendly product recommendation response for an e-commerce shopping assistant.
 
 USER: {user_name}
 FOUND: {has_results}
@@ -329,6 +341,103 @@ Generate response:"""
             "error": None if action_result["success"] else action_result.get("error"),
         }
 
+    async def _handle_general_chat(
+        self,
+        user_query: str,
+        user_info: UserInDB,
+        conversation_id: str,
+    ) -> dict[str, Any]:
+        """Handle general conversational queries using agent with conditional Tavily tool.
+
+        Uses create_agent with tools list that's populated only if Tavily is available.
+        Agent works identically with or without tools.
+
+        Args:
+            user_query: User's conversational message
+            user_info: User information
+            conversation_id: Conversation identifier
+
+        Returns:
+            Response dict with conversational reply
+        """
+        user_name = user_info.firstName if user_info.firstName else "there"
+
+        try:
+            # Conditionally include search_web tool based on Tavily availability
+            tools = [search_web] if tavily_service.is_available() else []
+
+            if not tools:
+                logger.info("Tavily not available - agent will respond without web search")
+
+            # System message (works for both with/without tools)
+            system_message = f"""You are a friendly e-commerce shopping assistant chatting with {user_name}.
+
+CAPABILITIES:
+• You can have casual conversations (greetings, jokes, small talk)
+• You have access to tools for factual questions (weather, news, sports, etc.)
+• You should ALWAYS guide the conversation back to shopping
+
+RESPONSE GUIDELINES:
+• Be warm, conversational, and helpful
+• For casual chat: Respond naturally and ask how they're doing
+• For greetings like "how are you", respond with "I'm great, thanks for asking! How are you doing today?"
+• For factual questions: Use available tools to get current information
+• ALWAYS end your response by mentioning shopping opportunities:
+  "Feel free to tell me what products you're looking for - I'm here to help you find exactly what you need!"
+• Keep responses concise (2-4 sentences total)"""
+
+            # Create agent (works with empty or populated tools list)
+            agent_executor = create_agent(
+                model=self.llm,
+                tools=tools,
+                state_modifier=system_message,
+            )
+
+            # Execute agent (same code path for both scenarios)
+            result = await agent_executor.ainvoke({"messages": [("user", user_query)]})
+
+            # Extract response from messages (unified logic)
+            messages = result.get("messages", [])
+            if messages:
+                response_text = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
+            else:
+                response_text = "I apologize, but I couldn't generate a response."
+
+            # Determine source based on whether tool was used
+            tool_used = any(
+                hasattr(msg, 'tool_calls') and msg.tool_calls
+                for msg in messages
+                if hasattr(msg, 'tool_calls')
+            )
+            source = "general_chat_with_search" if tool_used else "general_chat"
+
+
+            return {
+                "message": response_text.strip(),
+                "products": [],
+                "conversation_id": conversation_id,
+                "has_results": False,
+                "source": source,
+                "error": None,
+            }
+
+        except Exception as e:
+            logger.error("General chat handler failed: %s", e)
+            # Fallback response
+            return {
+                "message": (
+                    f"Hi {user_name}! I'm your shopping assistant. "
+                    "I'm here to help you search for products, send details via email, "
+                    "or complete purchases. What can I help you find today?"
+                ),
+                "products": [],
+                "conversation_id": conversation_id,
+                "has_results": False,
+                "source": "general_chat",
+                "error": str(e),
+            }
+
+
     async def _handle_search_workflow(
         self,
         user_query: str,
@@ -487,6 +596,11 @@ Generate response:"""
             last_product_ids = last_product_ids or []
 
             intent, product_hint = await self._detect_intent(user_query, last_product_ids)
+
+            # ── Intent branch: general chat ────────────────────────────────────
+            if intent == IntentType.GENERAL_CHAT:
+                logger.info("Routing to general chat handler (with tool access)")
+                return await self._handle_general_chat(user_query, user_info, conversation_id)
 
             # ── Intent branch: email or purchase ───────────────────────────────
             action_response = await self._handle_action_intent(

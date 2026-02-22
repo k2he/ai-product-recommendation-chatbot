@@ -14,13 +14,14 @@ class IntentType(str, Enum):
     SEARCH = "search"
     EMAIL = "email"
     PURCHASE = "purchase"
+    GENERAL_CHAT = "general_chat"
 
 
 class IntentResponse(BaseModel):
     """Structured output model for intent classification."""
 
     intent: IntentType = Field(
-        description="The classified intent: 'search', 'email', or 'purchase'"
+        description="The classified intent: 'search', 'email', 'purchase', or 'general_chat'"
     )
     product_hint: Optional[str] = Field(
         default=None,
