@@ -75,11 +75,15 @@ const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
                     <p className="text-xs text-gray-400 mt-2">
                       Source:{' '}
                       {message.source === 'vector_db'
-                        ? 'Pinecone DB'
-                        : message.source === 'web_search'
-                        ? 'Web Search'
+                        ? 'Pinecone Database'
+                        : message.source === 'none'
+                        ? 'No Results'
                         : message.source === 'action'
                         ? 'Action'
+                        : message.source === 'general_chat'
+                        ? 'Conversation'
+                        : message.source === 'general_chat_with_search'
+                        ? 'Conversation with Web Search (Tool called)'
                         : 'N/A'}
                     </p>
                   )}

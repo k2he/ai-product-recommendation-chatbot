@@ -78,7 +78,7 @@ class ChatResponse(BaseModel):
     has_results: bool = Field(..., description="Whether products were found")
     source: str = Field(
         ...,
-        description="Source of results: 'vector_db', 'web_search', 'action', or 'none'",
+        description="Source of results: 'vector_db' (products from database), 'action' (email/purchase), 'general_chat' (conversation), 'general_chat_with_search' (conversation with search tool), or 'none' (no results)",
     )
 
     model_config = {
