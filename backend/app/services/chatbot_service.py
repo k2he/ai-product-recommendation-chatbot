@@ -332,10 +332,17 @@ Generate response:"""
         intent: IntentType,
         product_hint: Optional[str],
         last_product_ids: list[str],
-        user_id: str,
+        user_info: Optional[UserInDB],
         conversation_id: str,
     ) -> Optional[dict[str, Any]]:
         """Handle email or purchase intent.
+
+        Args:
+            intent: Detected intent (EMAIL or PURCHASE)
+            product_hint: Product name hint extracted from query
+            last_product_ids: Product SKUs from previous response
+            user_info: Pre-fetched user info to avoid duplicate DB call
+            conversation_id: Conversation identifier
 
         Returns:
             Response dict if action was executed, None if intent is not email/purchase
@@ -348,7 +355,7 @@ Generate response:"""
         action_result = await self.execute_action(
             action=intent,
             product_id=target_id,
-            user_id=user_id,
+            user_info=user_info,
         )
 
         return {
@@ -363,18 +370,25 @@ Generate response:"""
     async def _handle_search_workflow(
         self,
         user_query: str,
-        user_id: str,
+        user_info: UserInDB,
         conversation_id: str,
     ) -> dict[str, Any]:
         """Handle the search workflow (Steps 1-4).
 
+        Args:
+            user_query: User's search query
+            user_info: User information (required, must be pre-fetched by caller)
+            conversation_id: Conversation identifier
+
         Returns:
             Response dict with search results and generated message
         """
-        # ── Step 1: User info ──────────────────────────────────────────────
-        logger.info("Step 1: Retrieving user info for: %s", user_id)
-        user_info = await self._get_user_info(user_id)
-        user_name = user_info.firstName if user_info and user_info.firstName else "there"
+        # ── Step 1: User info validation ───────────────────────────────────
+        if not user_info:
+            raise ValueError("user_info is required but was not provided")
+
+        logger.info("Step 1: Using user info for: %s", user_info.userId)
+        user_name = user_info.firstName if user_info.firstName else "there"
 
         # ── Step 2: SelfQueryingRetriever ─────────────────────────────────
         logger.info("Step 2: Running SelfQueryingRetriever")
@@ -454,14 +468,21 @@ Generate response:"""
         user_email: str,
         product: Product,
         product_id: str,
-        user_id: str,
+        user_info: UserInDB,
     ) -> dict[str, Any]:
         """Execute purchase action - place order for product.
+
+        Args:
+            user_name: User's first name
+            user_email: User's email address
+            product: Product to purchase
+            product_id: Product SKU
+            user_info: User information for generating order ID
 
         Returns:
             Action result dict with success status and message
         """
-        order_id = f"ORD-{product_id}-{user_id[-4:]}"
+        order_id = f"ORD-{product_id}-{user_info.userId[-4:]}"
         return {
             "success": True,
             "message": (
@@ -482,17 +503,23 @@ Generate response:"""
     async def process_chat_interaction(
         self,
         user_query: str,
-        user_id: str,
+        user_info: UserInDB,
         conversation_id: str,
         last_product_ids: list[str],
     ) -> dict:
         """Execute the full chatbot workflow.
 
+        Args:
+            user_query: User's query message
+            user_info: User information (required, must be pre-fetched by caller)
+            conversation_id: Conversation identifier
+            last_product_ids: Product SKUs from previous assistant response
+
         Workflow:
           Step 0 — intent_chain (LLM)
                    → 'email' or 'purchase': resolve product, call execute_action, return
                    → 'search': continue
-          Step 1 — MongoDB user lookup
+          Step 1 — User validation
           Step 2 — SelfQueryingRetriever (single LLM call)
                    Decomposes query into semantic string + metadata filter,
                    runs Pinecone search with filter applied.
@@ -502,6 +529,12 @@ Generate response:"""
         try:
             logger.info("Starting workflow for query: '%s'", user_query)
 
+            # ── Validate user info ─────────────────────────────────────────────
+            if not user_info:
+                raise ValueError("user_info is required but was not provided")
+
+            logger.info("Processing request for user: %s", user_info.userId)
+
             # ── Step 0: Intent Detection ───────────────────────────────────────
             logger.info("Step 0: Detecting intent")
             last_product_ids = last_product_ids or []
@@ -510,13 +543,15 @@ Generate response:"""
 
             # ── Intent branch: email or purchase ───────────────────────────────
             action_response = await self._handle_action_intent(
-                intent, product_hint, last_product_ids, user_id, conversation_id
+                intent, product_hint, last_product_ids, user_info, conversation_id
             )
             if action_response:
                 return action_response
 
             # ── Search workflow ────────────────────────────────────────────────
-            return await self._handle_search_workflow(user_query, user_id, conversation_id)
+            return await self._handle_search_workflow(
+                user_query, user_info, conversation_id
+            )
 
         except Exception as e:
             logger.error("Workflow error: %s", e)
@@ -533,23 +568,22 @@ Generate response:"""
         self,
         action: IntentType,
         product_id: str,
-        user_id: str,
+        user_info: UserInDB,
     ) -> dict[str, Any]:
         """Execute an email or purchase action for a specific product.
 
         Args:
             action: The action to perform (EMAIL or PURCHASE)
             product_id: Product SKU
-            user_id: User ID
+            user_info: User information (required, must be pre-fetched by caller)
 
         Returns:
             Action result dict with success status, message, and optional details
         """
         try:
-            # Validate user exists
-            user_info = await self._get_user_info(user_id)
+            # Validate user info
             if not user_info:
-                return {"success": False, "message": "User not found.", "error": "user_not_found"}
+                raise ValueError("user_info is required but was not provided")
 
             # Validate product exists
             product = await pinecone_db.get_product_by_id(product_id)
@@ -570,7 +604,7 @@ Generate response:"""
 
             elif action == IntentType.PURCHASE:
                 return await self._execute_purchase_action(
-                    user_name, user_email, product, product_id, user_id
+                    user_name, user_email, product, product_id, user_info
                 )
 
             else:

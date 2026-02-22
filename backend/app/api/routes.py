@@ -83,7 +83,7 @@ async def chat(
 
         result = await chatbot_service.process_chat_interaction(
             user_query=request.query,
-            user_id=user_id,
+            user_info=user,
             conversation_id=conversation_id,
             last_product_ids=request.last_product_ids,
         )
@@ -139,7 +139,7 @@ async def execute_action(
         result = await chatbot_service.execute_action(
             action=request.action,
             product_id=request.product_id,
-            user_id=user_id,
+            user_info=user,
         )
 
         if not result["success"]:
