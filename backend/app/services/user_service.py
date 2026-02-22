@@ -18,10 +18,10 @@ class UserService:
         try:
             return await mongodb.create_user(user)
         except ValueError as e:
-            logger.error(f"Error creating user: {e}")
+            logger.error("Error creating user: %s", e)
             raise
         except Exception as e:
-            logger.error(f"Unexpected error creating user: {e}")
+            logger.error("Unexpected error creating user: %s", e)
             raise
 
     @staticmethod
@@ -30,7 +30,7 @@ class UserService:
         try:
             return await mongodb.get_user(user_id)
         except Exception as e:
-            logger.error(f"Error getting user {user_id}: {e}")
+            logger.error("Error getting user %s: %s", user_id, e)
             return None
 
     @staticmethod
@@ -39,7 +39,7 @@ class UserService:
         try:
             return await mongodb.get_user_by_email(email)
         except Exception as e:
-            logger.error(f"Error getting user by email {email}: {e}")
+            logger.error("Error getting user by email %s: %s", email, e)
             return None
 
     @staticmethod
@@ -48,7 +48,7 @@ class UserService:
         try:
             return await mongodb.update_user(user_id, user_update)
         except Exception as e:
-            logger.error(f"Error updating user {user_id}: {e}")
+            logger.error("Error updating user %s: %s", user_id, e)
             return None
 
     @staticmethod
@@ -57,7 +57,7 @@ class UserService:
         try:
             return await mongodb.delete_user(user_id)
         except Exception as e:
-            logger.error(f"Error deleting user {user_id}: {e}")
+            logger.error("Error deleting user %s: %s", user_id, e)
             return False
 
     @staticmethod
@@ -66,7 +66,7 @@ class UserService:
         try:
             return await mongodb.list_users(skip, limit)
         except Exception as e:
-            logger.error(f"Error listing users: {e}")
+            logger.error("Error listing users: %s", e)
             return []
 
 

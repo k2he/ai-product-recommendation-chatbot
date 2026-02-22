@@ -8,7 +8,6 @@ from pydantic import BaseModel, Field
 from app.models.product import Product
 
 
-
 class IntentType(str, Enum):
     """Valid intent types for intent classification."""
 
@@ -40,16 +39,15 @@ class ChatRequest(BaseModel):
                     "Used for intent detection (email/purchase) without repeating search.",
     )
 
-    class Config:
-        """Pydantic config."""
-
-        json_schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "query": "I need wireless headphones with good battery life",
                 "conversation_id": "conv_123",
                 "last_product_ids": [],
             }
         }
+    }
 
 
 class ActionRequest(BaseModel):
@@ -59,16 +57,15 @@ class ActionRequest(BaseModel):
     product_id: str = Field(..., description="Product SKU for the action")
     conversation_id: Optional[str] = Field(None, description="Conversation ID")
 
-    class Config:
-        """Pydantic config."""
-
-        json_schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "action": "email",
                 "product_id": "18470962",
                 "conversation_id": "conv_123",
             }
         }
+    }
 
 
 class ChatResponse(BaseModel):
@@ -83,10 +80,8 @@ class ChatResponse(BaseModel):
         description="Source of results: 'vector_db', 'web_search', 'action', or 'none'",
     )
 
-    class Config:
-        """Pydantic config."""
-
-        json_schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "message": "I found 3 wireless headphones that match your requirements...",
                 "products": [
@@ -119,10 +114,8 @@ class ActionResponse(BaseModel):
     product_id: str = Field(..., description="Product SKU that was acted on")
     details: Optional[dict[str, Any]] = Field(None, description="Additional action details")
 
-    class Config:
-        """Pydantic config."""
-
-        json_schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "success": True,
                 "message": "Product details sent to user@example.com",
@@ -131,6 +124,7 @@ class ActionResponse(BaseModel):
                 "details": {"email": "user@example.com"},
             }
         }
+    }
 
 
 class ErrorResponse(BaseModel):

@@ -63,7 +63,7 @@ class ChatbotService:
                 else None
             )
         except Exception as e:
-            logger.warning(f"Failed to initialise Tavily: {e}")
+            logger.warning("Failed to initialise Tavily: %s", e)
             self.tavily = None
 
         # sqr is lazily initialised on first use so that the service module can
@@ -152,7 +152,7 @@ Generate response:"""
             with open(categories_file, "r", encoding="utf-8") as f:
                 data = json.load(f)
             categories = data.get("categories", [])
-            logger.info(f"Loaded {len(categories)} categories from {categories_file}")
+            logger.info("Loaded %d categories from %s", len(categories), categories_file)
             return categories
         except FileNotFoundError:
             logger.warning(
@@ -161,7 +161,7 @@ Generate response:"""
             )
             return []
         except Exception as e:
-            logger.warning(f"Failed to load categories.json: {e}")
+            logger.warning("Failed to load categories.json: %s", e)
             return []
 
 
@@ -170,7 +170,7 @@ Generate response:"""
         try:
             return await mongodb.get_user(user_id)
         except Exception as e:
-            logger.warning(f"Failed to retrieve user {user_id}: {e}")
+            logger.warning("Failed to retrieve user %s: %s", user_id, e)
             return None
 
     async def _run_sqr(self, query: str) -> list[Product]:
@@ -186,7 +186,7 @@ Generate response:"""
             # SQR.ainvoke returns a list of LangChain Document objects
             docs = await retriever.ainvoke(query)
         except Exception as e:
-            logger.error(f"SQR retrieval failed: {e}")
+            logger.error("SQR retrieval failed: %s", e)
             return []
 
         products: list[Product] = []
@@ -209,7 +209,7 @@ Generate response:"""
                     )
                 )
             except Exception as e:
-                logger.warning(f"Skipping malformed product document: {e}")
+                logger.warning("Skipping malformed product document: %s", e)
         return products
 
     async def _web_search(self, query: str) -> list[dict]:
@@ -219,7 +219,7 @@ Generate response:"""
         try:
             return await self.tavily.ainvoke(query)
         except Exception as e:
-            logger.error(f"Web search failed: {e}")
+            logger.error("Web search failed: %s", e)
             return []
 
     async def _generate_response(
@@ -256,26 +256,29 @@ Generate response:"""
 
     async def _generate_web_response(self, user_name: str, web_results: list[dict]) -> str:
         """Generate a response from Tavily web search results."""
-        summary = "\n".join(
-            f"- {r.get('title', '')}: {r.get('content', '')[:200]}"
+        summary_lines = [
+            f"- {r.get('title', 'Untitled')}: {r.get('content', '')[:200]}"
             for r in web_results[:3]
-        )
-        return await self._generate_response(
-            user_name=user_name,
-            products=[],
-            has_results=True,
-            source="web_search",
-        )
+        ]
+        summary = "\n".join(summary_lines)
+
+        result = await self.response_chain.ainvoke({
+            "user_name": user_name,
+            "has_results": "True",
+            "source": "web_search",
+            "products": summary,
+        })
+        return result.strip()
 
     async def _detect_intent(
         self,
         user_query: str,
         last_product_ids: list[str],
-    ) -> tuple[str, Optional[str]]:
+    ) -> tuple[IntentType, Optional[str]]:
         """Detect user intent and extract product hint.
 
         Returns:
-            Tuple of (intent, product_hint)
+            Tuple of (intent_enum, product_hint)
         """
         # Resolve product names for the intent prompt context
         last_product_names = "none"
@@ -293,14 +296,15 @@ Generate response:"""
                 "query": user_query,
                 "last_product_names": last_product_names,
             })
-            intent = intent_response.intent.value
+            # Use intent_response.intent directly (already IntentType)
+            intent_enum = intent_response.intent
             product_hint = intent_response.product_hint
         except Exception as e:
-            logger.warning(f"Intent detection failed, defaulting to 'search': {e}")
-            intent, product_hint = "search", None
+            logger.warning("Intent detection failed, defaulting to 'search': %s", e)
+            intent_enum, product_hint = IntentType.SEARCH, None
 
-        logger.info(f"Intent: '{intent}' | product_hint: '{product_hint}'")
-        return intent, product_hint
+        logger.info("Intent: '%s' | product_hint: '%s'", intent_enum, product_hint)
+        return intent_enum, product_hint
 
     async def _resolve_target_product_id(
         self,
@@ -325,7 +329,7 @@ Generate response:"""
 
     async def _handle_action_intent(
         self,
-        intent: str,
+        intent: IntentType,
         product_hint: Optional[str],
         last_product_ids: list[str],
         user_id: str,
@@ -336,13 +340,13 @@ Generate response:"""
         Returns:
             Response dict if action was executed, None if intent is not email/purchase
         """
-        if intent not in ("email", "purchase") or not last_product_ids:
+        if intent not in (IntentType.EMAIL, IntentType.PURCHASE) or not last_product_ids:
             return None
 
         target_id = await self._resolve_target_product_id(last_product_ids, product_hint)
 
         action_result = await self.execute_action(
-            action=IntentType(intent),
+            action=intent,
             product_id=target_id,
             user_id=user_id,
         )
@@ -368,7 +372,7 @@ Generate response:"""
             Response dict with search results and generated message
         """
         # ── Step 1: User info ──────────────────────────────────────────────
-        logger.info(f"Step 1: Retrieving user info for: {user_id}")
+        logger.info("Step 1: Retrieving user info for: %s", user_id)
         user_info = await self._get_user_info(user_id)
         user_name = user_info.firstName if user_info and user_info.firstName else "there"
 
@@ -376,7 +380,7 @@ Generate response:"""
         logger.info("Step 2: Running SelfQueryingRetriever")
         products = await self._run_sqr(user_query)
         search_source = "vector_db" if products else "none"
-        logger.info(f"SQR returned {len(products)} products")
+        logger.info("SQR returned %d products", len(products))
 
         # ── Step 3: Web search fallback ────────────────────────────────────
         if not products and self.tavily:
@@ -401,7 +405,7 @@ Generate response:"""
             source=search_source,
         )
 
-        logger.info(f"Workflow complete — {len(products)} products returned")
+        logger.info("Workflow complete — %d products returned", len(products))
         return {
             "message": response_message,
             "products": products,
@@ -437,7 +441,7 @@ Generate response:"""
                 "details": {"email": user_email, "product_name": product.name},
             }
         except Exception as e:
-            logger.error(f"Email sending failed: {e}")
+            logger.error("Email sending failed: %s", e)
             return {
                 "success": False,
                 "message": "Failed to send email. Please try again.",
@@ -475,13 +479,13 @@ Generate response:"""
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
-    async def execute_query(
+    async def process_chat_interaction(
         self,
         user_query: str,
         user_id: str,
         conversation_id: str,
-        last_product_ids: Optional[list[str]] = None,
-    ) -> dict[str, Any]:
+        last_product_ids: list[str],
+    ) -> dict:
         """Execute the full chatbot workflow.
 
         Workflow:
@@ -496,7 +500,7 @@ Generate response:"""
           Step 4 — response_chain (LLM) generates friendly reply + CTA
         """
         try:
-            logger.info(f"Starting workflow for query: '{user_query}'")
+            logger.info("Starting workflow for query: '%s'", user_query)
 
             # ── Step 0: Intent Detection ───────────────────────────────────────
             logger.info("Step 0: Detecting intent")
@@ -515,7 +519,7 @@ Generate response:"""
             return await self._handle_search_workflow(user_query, user_id, conversation_id)
 
         except Exception as e:
-            logger.error(f"Workflow error: {e}")
+            logger.error("Workflow error: %s", e)
             return {
                 "message": "I apologise, but I encountered an error. Please try again.",
                 "products": [],
@@ -558,7 +562,7 @@ Generate response:"""
 
             # Extract user info
             user_name = user_info.firstName if user_info.firstName else "there"
-            user_email = user_info.email
+            user_email = str(user_info.email)
 
             # Execute action based on intent
             if action == IntentType.EMAIL:
@@ -577,7 +581,7 @@ Generate response:"""
                 }
 
         except Exception as e:
-            logger.error(f"Action error ({action}): {e}")
+            logger.error("Action error (%s): %s", action, e)
             return {
                 "success": False,
                 "message": "Failed to execute action. Please try again.",

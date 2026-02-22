@@ -1,7 +1,7 @@
 """MongoDB database connection and operations."""
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
@@ -34,13 +34,13 @@ class MongoDB:
 
             # Test connection
             await self.client.admin.command("ping")
-            logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
+            logger.info("Connected to MongoDB: %s", settings.mongodb_database)
 
             # Create indexes
             await self._create_indexes()
 
         except ConnectionFailure as e:
-            logger.error(f"Failed to connect to MongoDB: {e}")
+            logger.error("Failed to connect to MongoDB: %s", e)
             raise
 
     async def disconnect(self) -> None:
@@ -69,8 +69,8 @@ class MongoDB:
 
         try:
             user_data = user.model_dump()
-            user_data["createdAt"] = datetime.utcnow()
-            user_data["updatedAt"] = datetime.utcnow()
+            user_data["createdAt"] = datetime.now(UTC)
+            user_data["updatedAt"] = datetime.now(UTC)
 
             result = await self.db[settings.mongodb_user_collection].insert_one(user_data)
 
@@ -119,7 +119,7 @@ class MongoDB:
         if not update_data:
             return await self.get_user(user_id)
 
-        update_data["updatedAt"] = datetime.utcnow()
+        update_data["updatedAt"] = datetime.now(UTC)
 
         result = await self.db[settings.mongodb_user_collection].update_one(
             {"userId": user_id}, {"$set": update_data}

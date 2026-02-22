@@ -2,9 +2,9 @@
 
 import logging
 import smtplib
+from datetime import UTC, datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from typing import Optional
 
 from app.config import get_settings
 from app.models.product import Product
@@ -111,7 +111,7 @@ class EmailService:
                 </div>
                 <div class="footer">
                     <p>This email was sent from the Product Recommendation Chatbot.</p>
-                    <p>&copy; 2024 Product Recommendation Service. All rights reserved.</p>
+                    <p>&copy; {datetime.now(UTC).year} Product Recommendation Service. All rights reserved.</p>
                 </div>
             </div>
         </body>
@@ -122,8 +122,14 @@ class EmailService:
     @staticmethod
     async def send_product_email(
         recipient_email: str, recipient_name: str, product: Product
-    ) -> bool:
-        """Send product information via email."""
+    ) -> None:
+        """Send product information via email.
+
+        Raises:
+            smtplib.SMTPAuthenticationError: If SMTP credentials are invalid.
+            smtplib.SMTPException: If an SMTP protocol error occurs.
+            RuntimeError: If sending fails for any other reason.
+        """
         try:
             # Create message
             msg = MIMEMultipart("alternative")
@@ -167,18 +173,17 @@ class EmailService:
                     server.login(settings.smtp_username, settings.smtp_password)
                 server.send_message(msg)
 
-            logger.info(f"Email sent successfully to {recipient_email}")
-            return True
+            logger.info("Email sent successfully to %s", recipient_email)
 
-        except smtplib.SMTPAuthenticationError as e:
-            logger.error(f"SMTP authentication failed. Check credentials: {e}")
-            return False
-        except smtplib.SMTPException as e:
-            logger.error(f"SMTP error sending email: {e}")
-            return False
+        except smtplib.SMTPAuthenticationError:
+            logger.error("SMTP authentication failed — check credentials")
+            raise
+        except smtplib.SMTPException:
+            logger.error("SMTP error sending email")
+            raise
         except Exception as e:
-            logger.error(f"Error sending email: {e}")
-            return False
+            logger.error("Unexpected error sending email: %s", e)
+            raise RuntimeError(f"Failed to send email: {e}") from e
 
 
 # Global email service instance

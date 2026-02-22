@@ -81,13 +81,14 @@ class PineconeDB:
                 desc = self.client.describe_index(settings.pinecone_index_name)
                 if desc.dimension != settings.pinecone_dimension:
                     logger.warning(
-                        f"Dimension mismatch — deleting index: {settings.pinecone_index_name}"
+                        "Dimension mismatch — deleting index: %s",
+                        settings.pinecone_index_name,
                     )
                     self.client.delete_index(settings.pinecone_index_name)
                     existing_indexes.remove(settings.pinecone_index_name)
 
             if settings.pinecone_index_name not in existing_indexes:
-                logger.info(f"Creating Pinecone index: {settings.pinecone_index_name}")
+                logger.info("Creating Pinecone index: %s", settings.pinecone_index_name)
                 self.client.create_index(
                     name=settings.pinecone_index_name,
                     dimension=settings.pinecone_dimension,
@@ -103,13 +104,17 @@ class PineconeDB:
             )
 
             self.index = self.client.Index(settings.pinecone_index_name)
-            logger.info(f"Connected to Pinecone index: {settings.pinecone_index_name}")
+            logger.info("Connected to Pinecone index: %s", settings.pinecone_index_name)
 
         except Exception as e:
-            logger.error(f"Failed to connect to Pinecone: {e}")
+            logger.error("Failed to connect to Pinecone: %s", e)
             raise
 
     async def disconnect(self) -> None:
+        """Release Pinecone resources (no persistent connection to close)."""
+        self.client = None
+        self.index = None
+        self.vectorstore = None
         logger.info("Pinecone connection closed")
 
     # ── Self-Querying Retriever factory ────────────────────────────────────────
@@ -166,9 +171,9 @@ class PineconeDB:
         )
 
         logger.info(
-            f"SelfQueryingRetriever built — "
-            f"{len(metadata_field_info)} metadata fields, "
-            f"{len(categories)} categories."
+            "SelfQueryingRetriever built — %d metadata fields, %d categories.",
+            len(metadata_field_info),
+            len(categories),
         )
         return retriever
 
@@ -185,9 +190,9 @@ class PineconeDB:
                 metadatas=[d.metadata for d in documents],
                 ids=[d.product_id for d in documents],
             )
-            logger.info(f"Added {len(products)} products to Pinecone")
+            logger.info("Added %d products to Pinecone", len(products))
         except Exception as e:
-            logger.error(f"Failed to add products to Pinecone: {e}")
+            logger.error("Failed to add products to Pinecone: %s", e)
             raise
 
     # ── Point lookup ───────────────────────────────────────────────────────────
@@ -202,7 +207,7 @@ class PineconeDB:
             )
             vectors = fetch_response.vectors
             if product_id not in vectors:
-                logger.info(f"Product '{product_id}' not found in Pinecone")
+                logger.info("Product '%s' not found in Pinecone", product_id)
                 return None
 
             meta = vectors[product_id].metadata or {}
@@ -217,34 +222,38 @@ class PineconeDB:
                 categoryName=meta.get("categoryName", ""),
                 isOnSale=bool(meta.get("isOnSale", False)),
                 highResImage=meta.get("highResImage") or None,
+                relevance_score=None,
             )
         except Exception as e:
-            logger.error(f"Failed to fetch product by ID: {e}")
+            logger.error("Failed to fetch product by ID: %s", e)
             return None
 
     # ── Admin helpers ──────────────────────────────────────────────────────────
 
     async def delete_products(self, product_ids: list[str]) -> None:
+        """Delete specific products from the Pinecone index by their IDs."""
         if not self.index:
             raise ConnectionError("Index not initialised.")
         try:
             self.index.delete(ids=product_ids, namespace=settings.pinecone_namespace)
-            logger.info(f"Deleted {len(product_ids)} products from Pinecone")
+            logger.info("Deleted %d products from Pinecone", len(product_ids))
         except Exception as e:
-            logger.error(f"Failed to delete products: {e}")
+            logger.error("Failed to delete products: %s", e)
             raise
 
     async def clear_index(self) -> None:
+        """Delete all vectors from the configured namespace."""
         if not self.index:
             raise ConnectionError("Index not initialised.")
         try:
             self.index.delete(delete_all=True, namespace=settings.pinecone_namespace)
             logger.info("Cleared all products from Pinecone index")
         except Exception as e:
-            logger.error(f"Failed to clear index: {e}")
+            logger.error("Failed to clear index: %s", e)
             raise
 
     async def get_stats(self) -> dict[str, Any]:
+        """Return index statistics (total vectors, dimension, namespaces)."""
         if not self.index:
             raise ConnectionError("Index not initialised.")
         try:
@@ -255,7 +264,7 @@ class PineconeDB:
                 "namespaces": stats.get("namespaces", {}),
             }
         except Exception as e:
-            logger.error(f"Failed to get index stats: {e}")
+            logger.error("Failed to get index stats: %s", e)
             return {}
 
 

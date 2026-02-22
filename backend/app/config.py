@@ -1,14 +1,12 @@
 """Application configuration management using Pydantic Settings."""
-import os
+
 from functools import lru_cache
-from typing import Optional
 from pathlib import Path
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Get the directory where settings.py is located
-BASE_DIR = Path(__file__).resolve().parent
+_BASE_DIR = Path(__file__).resolve().parent
 
 class Settings(BaseSettings):
     """Application settings with environment variable support."""
@@ -78,8 +76,7 @@ class Settings(BaseSettings):
     log_format: str = "json"
 
     model_config = SettingsConfigDict(
-        env_file= BASE_DIR.parent / ".env",
-        # env_file=os.path.join(BASE_DIR, ".env"),
+        env_file=_BASE_DIR.parent / ".env",
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
