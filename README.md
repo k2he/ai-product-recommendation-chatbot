@@ -11,7 +11,6 @@ A production-ready AI-powered chatbot that recommends BestBuy Canada products ba
 - **Self-Querying Retriever (SQR)** — Single LangChain component that decomposes a natural language query into a semantic search string **and** a structured Pinecone metadata filter in one LLM call — no manual JSON parsing or separate rephrase step
 - **Metadata Filtering** — Filters on `categoryName`, `salePrice`, `customerRating`, and `isOnSale` are built automatically by SQR and applied natively in Pinecone
 - **User Management** — MongoDB-based user profiles (name, email) used in responses and actions
-- **Web Search Fallback** — Tavily integration when products aren't found in the database
 - **Email & Purchase Actions** — Triggered by UI buttons or free-text (e.g. "send it to my email")
 - **Purchase CTA in every response** — After showing products, the assistant always asks if the user wants to email or purchase
 - **Optimistic UI** — "Alright [Name], let me help you with that. Give me a second! ⏳" shown instantly while the API responds
@@ -31,7 +30,6 @@ A production-ready AI-powered chatbot that recommends BestBuy Canada products ba
 | Ollama (`gpt-oss:20b` + `nomic-embed-text`) | Local LLM inference & embeddings |
 | Pinecone | Vector database with metadata filtering |
 | MongoDB | User profile storage |
-| Tavily API | Web search fallback |
 | UV | Python package manager |
 | LangSmith | Tracing & debugging |
 
@@ -85,18 +83,15 @@ A production-ready AI-powered chatbot that recommends BestBuy Canada products ba
 │  │                  MongoDB (user)     │   │
 │  │                      │             │   │
 │  │                      │             │   │
-│  │                  [no results?]      │   │
-│  │                  Tavily fallback    │   │
-│  │                      │             │   │
 │  │                  response_chain     │   │
 │  │                  + CTA (LLM)        │   │
 │  └─────────────────────────────────────┘  │
 └─────────────────────────────────────────────┘
-        │            │             │
-        ▼            ▼             ▼
-   ┌─────────┐  ┌────────┐  ┌──────────┐
-   │Pinecone │  │MongoDB │  │  Tavily  │
-   └─────────┘  └────────┘  └──────────┘
+        │            │
+        ▼            ▼
+   ┌─────────┐  ┌────────┐
+   │Pinecone │  │MongoDB │
+   └─────────┘  └────────┘
 ```
 
 ---
@@ -113,11 +108,11 @@ Step 0 ── intent_chain (LLM)
           Output: { "intent": "search", "product_hint": null }
                 │
                 ▼ (intent = "search")
-Step 2 ── MongoDB → fetch user (name, email)
+Step 1 ── MongoDB → fetch user (name, email)
                 │
                 ▼
-Steps  ── SelfQueryingRetriever (single LLM call — replaces Steps 1 + 3)
-1 + 3     ┌─ LLM decomposes query into:
+Steps  ── SelfQueryingRetriever (single LLM call — replaces old rephrase + filter steps)
+2 + 3     ┌─ LLM decomposes query into:
           │    semantic string: "laptop sale discount under 1500"
           │    filter: {
           │      "categoryName": { "$eq": "Laptops" },
@@ -126,13 +121,8 @@ Steps  ── SelfQueryingRetriever (single LLM call — replaces Steps 1 + 3)
           │    }
           └─ Pinecone similarity search with filter applied natively
                 │
-          ┌─────┴──────────┐
-          │ results found? │
-          └─────┬──────────┘
-       yes      │       no
-                │     Step 4 ── Tavily web search fallback
                 ▼
-Step 5 ── response_chain (LLM)
+Step 4 ── response_chain (LLM)
           Generates friendly response + mandatory CTA:
           "Would you like me to send these to your email, or purchase one?"
                 │
@@ -244,7 +234,6 @@ This file is read at startup by `ChatbotService._load_categories()` and injected
 - Docker & Docker Compose
 - Ollama running locally with `gpt-oss:20b` and `nomic-embed-text` models
 - Pinecone API key (free tier available at pinecone.io)
-- Tavily API key (optional — enables web search fallback)
 - SMTP credentials (optional — enables real email sending)
 
 ---
@@ -263,7 +252,7 @@ cd product-recommendation-chatbot
 ```bash
 cd backend
 cp .env.example .env
-# Edit .env — add your PINECONE_API_KEY, TAVILY_API_KEY, SMTP credentials
+# Edit .env — add your PINECONE_API_KEY, SMTP credentials
 ```
 
 ### 3. Add Product Data
@@ -452,8 +441,6 @@ OLLAMA_EMBEDDING_MODEL=nomic-embed-text
 MONGODB_URL=mongodb://mongodb:27017
 MONGODB_DB_NAME=chatbot
 
-# Tavily (optional)
-TAVILY_API_KEY=your_key
 
 # LangSmith (optional)
 LANGSMITH_API_KEY=your_key

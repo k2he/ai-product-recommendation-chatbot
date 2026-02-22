@@ -18,7 +18,6 @@ from langchain.retrievers.self_query.base import SelfQueryRetriever
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_ollama import ChatOllama
-from langchain_community.tools.tavily_search import TavilySearchResults
 
 from app.config import get_settings
 from app.database.mongodb import mongodb
@@ -52,19 +51,6 @@ class ChatbotService:
             model=settings.ollama_model,
             temperature=settings.ollama_temperature,
         )
-
-        try:
-            self.tavily = (
-                TavilySearchResults(
-                    max_results=settings.tavily_max_results,
-                    search_depth=settings.tavily_search_depth,
-                )
-                if settings.tavily_api_key
-                else None
-            )
-        except Exception as e:
-            logger.warning("Failed to initialise Tavily: %s", e)
-            self.tavily = None
 
         # sqr is lazily initialised on first use so that the service module can
         # be imported before Pinecone has connected (e.g. during test collection).
@@ -212,15 +198,6 @@ Generate response:"""
                 logger.warning("Skipping malformed product document: %s", e)
         return products
 
-    async def _web_search(self, query: str) -> list[dict]:
-        """Fallback Tavily web search."""
-        if not self.tavily:
-            return []
-        try:
-            return await self.tavily.ainvoke(query)
-        except Exception as e:
-            logger.error("Web search failed: %s", e)
-            return []
 
     async def _generate_response(
         self,
@@ -254,21 +231,6 @@ Generate response:"""
         })
         return result.strip()
 
-    async def _generate_web_response(self, user_name: str, web_results: list[dict]) -> str:
-        """Generate a response from Tavily web search results."""
-        summary_lines = [
-            f"- {r.get('title', 'Untitled')}: {r.get('content', '')[:200]}"
-            for r in web_results[:3]
-        ]
-        summary = "\n".join(summary_lines)
-
-        result = await self.response_chain.ainvoke({
-            "user_name": user_name,
-            "has_results": "True",
-            "source": "web_search",
-            "products": summary,
-        })
-        return result.strip()
 
     async def _detect_intent(
         self,
@@ -396,22 +358,8 @@ Generate response:"""
         search_source = "vector_db" if products else "none"
         logger.info("SQR returned %d products", len(products))
 
-        # ── Step 3: Web search fallback ────────────────────────────────────
-        if not products and self.tavily:
-            logger.info("Step 3: Falling back to Tavily web search")
-            web_results = await self._web_search(user_query)
-            if web_results:
-                return {
-                    "message": await self._generate_web_response(user_name, web_results),
-                    "products": [],
-                    "conversation_id": conversation_id,
-                    "has_results": True,
-                    "source": "web_search",
-                    "error": None,
-                }
-
-        # ── Step 4: Generate response ──────────────────────────────────────
-        logger.info("Step 4: Generating response")
+        # ── Step 3: Generate response ──────────────────────────────────────
+        logger.info("Step 3: Generating response")
         response_message = await self._generate_response(
             user_name=user_name,
             products=products,
@@ -523,8 +471,7 @@ Generate response:"""
           Step 2 — SelfQueryingRetriever (single LLM call)
                    Decomposes query into semantic string + metadata filter,
                    runs Pinecone search with filter applied.
-          Step 3 — Tavily web search fallback (if SQR returns no results)
-          Step 4 — response_chain (LLM) generates friendly reply + CTA
+          Step 3 — response_chain (LLM) generates friendly reply + CTA
         """
         try:
             logger.info("Starting workflow for query: '%s'", user_query)
