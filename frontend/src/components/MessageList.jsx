@@ -85,21 +85,6 @@ const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
                   )}
                 </div>
 
-                {/* CTA banner — only rendered when the LLM included ---CTA--- */}
-                {cta && (
-                  <div className="flex items-start gap-2 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 mb-3">
-                    <span className="text-lg leading-none mt-0.5">📬</span>
-                    <p
-                      className="text-sm font-semibold text-blue-700 leading-snug"
-                      dangerouslySetInnerHTML={{
-                        __html: cta
-                          .replace(/^📬\s*/, '') // strip emoji if LLM included it in text
-                          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>'),
-                      }}
-                    />
-                  </div>
-                )}
-
                 {/* Product cards grid */}
                 {message.products && message.products.length > 0 && (
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-2">
@@ -112,6 +97,21 @@ const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
                         loading={loading}
                       />
                     ))}
+                  </div>
+                )}
+
+                {/* CTA banner — only rendered when the LLM included ---CTA--- */}
+                {cta && (
+                  <div className="flex items-start gap-2 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 mb-3 mt-4">
+                    <span className="text-lg leading-none mt-0.5">📬</span>
+                    <p
+                      className="text-sm font-semibold text-blue-700 leading-snug"
+                      dangerouslySetInnerHTML={{
+                        __html: cta
+                          .replace(/^📬\s*/, '') // strip emoji if LLM included it in text
+                          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>'),
+                      }}
+                    />
                   </div>
                 )}
 
