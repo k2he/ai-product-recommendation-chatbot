@@ -14,7 +14,7 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
-from langchain.retrievers.self_query.base import SelfQueryRetriever
+from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import PromptTemplate
 from langchain_ollama import ChatOllama
@@ -390,7 +390,7 @@ RESPONSE GUIDELINES:
             agent_executor = create_agent(
                 model=self.llm,
                 tools=tools,
-                state_modifier=system_message,
+                system_prompt=system_message,
             )
 
             # Execute agent (same code path for both scenarios)

@@ -66,6 +66,13 @@ class Settings(BaseSettings):
     # Vector Search
     vector_search_threshold: float = 0.7
     vector_search_top_k: int = 5
+    # Hybrid Search (alpha: 0.0=sparse only, 1.0=dense only, 0.5=balanced)
+    hybrid_search_alpha: float = Field(
+        default=0.75,
+        ge=0.0,
+        le=1.0,
+        description="Weight for dense vs sparse search (0.75 = 75% dense, 25% sparse)"
+    )
 
     # Rate Limiting
     rate_limit_requests: int = 10
