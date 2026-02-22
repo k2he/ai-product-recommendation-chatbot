@@ -4,11 +4,22 @@ import { useChat } from '../hooks/useChat';
 import MessageList from './MessageList';
 import InputBox from './InputBox';
 
+// Map userId → display name (mirrors the options in the dropdown)
+const USER_NAMES = {
+  user_001: 'Kai',
+  user_002: 'Jane',
+  user_003: 'Bob',
+};
+
 const ChatInterface = () => {
-  const { messages, loading, sendMessage, executeAction, clearMessages } = useChat();
   const [userId, setUserId] = React.useState(
     localStorage.getItem('userId') || 'user_001'
   );
+
+  // Derive first name for the greeting message
+  const userName = USER_NAMES[userId] || 'there';
+
+  const { messages, loading, sendMessage, executeAction, clearMessages } = useChat(userName);
 
   React.useEffect(() => {
     localStorage.setItem('userId', userId);
@@ -39,8 +50,7 @@ const ChatInterface = () => {
   };
 
   const handleUserChange = (e) => {
-    const newUserId = e.target.value;
-    setUserId(newUserId);
+    setUserId(e.target.value);
     clearMessages();
   };
 
@@ -74,7 +84,7 @@ const ChatInterface = () => {
                 </select>
               </div>
 
-              {/* Clear Chat Button */}
+              {/* Clear Chat */}
               <button
                 onClick={clearMessages}
                 className="flex items-center gap-2 px-4 py-2 text-sm text-gray-600 hover:text-gray-900 hover:bg-gray-100 rounded-lg transition-colors"

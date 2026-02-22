@@ -8,12 +8,25 @@ from pydantic import BaseModel, Field
 from app.models.product import Product
 
 
-class ActionType(str, Enum):
-    """Available user actions."""
 
-    PURCHASE = "purchase"
+class IntentType(str, Enum):
+    """Valid intent types for intent classification."""
+
+    SEARCH = "search"
     EMAIL = "email"
-    NONE = "none"
+    PURCHASE = "purchase"
+
+
+class IntentResponse(BaseModel):
+    """Structured output model for intent classification."""
+
+    intent: IntentType = Field(
+        description="The classified intent: 'search', 'email', or 'purchase'"
+    )
+    product_hint: Optional[str] = Field(
+        default=None,
+        description="The product name mentioned by the user, or null if none"
+    )
 
 
 class ChatRequest(BaseModel):
@@ -21,6 +34,11 @@ class ChatRequest(BaseModel):
 
     query: str = Field(..., min_length=1, max_length=1000, description="User's product query")
     conversation_id: Optional[str] = Field(None, description="Conversation ID for context")
+    last_product_ids: list[str] = Field(
+        default_factory=list,
+        description="SKUs of products shown in the most recent assistant response. "
+                    "Used for intent detection (email/purchase) without repeating search.",
+    )
 
     class Config:
         """Pydantic config."""
@@ -29,6 +47,7 @@ class ChatRequest(BaseModel):
             "example": {
                 "query": "I need wireless headphones with good battery life",
                 "conversation_id": "conv_123",
+                "last_product_ids": [],
             }
         }
 
@@ -36,8 +55,8 @@ class ChatRequest(BaseModel):
 class ActionRequest(BaseModel):
     """Action request model for tool execution."""
 
-    action: ActionType
-    product_id: str = Field(..., description="Product ID for the action")
+    action: IntentType
+    product_id: str = Field(..., description="Product SKU for the action")
     conversation_id: Optional[str] = Field(None, description="Conversation ID")
 
     class Config:
@@ -46,7 +65,7 @@ class ActionRequest(BaseModel):
         json_schema_extra = {
             "example": {
                 "action": "email",
-                "product_id": "prod123",
+                "product_id": "18470962",
                 "conversation_id": "conv_123",
             }
         }
@@ -60,7 +79,8 @@ class ChatResponse(BaseModel):
     conversation_id: str = Field(..., description="Conversation identifier")
     has_results: bool = Field(..., description="Whether products were found")
     source: str = Field(
-        ..., description="Source of results: 'vector_db', 'web_search', or 'none'"
+        ...,
+        description="Source of results: 'vector_db', 'web_search', 'action', or 'none'",
     )
 
     class Config:
@@ -71,15 +91,15 @@ class ChatResponse(BaseModel):
                 "message": "I found 3 wireless headphones that match your requirements...",
                 "products": [
                     {
-                        "product_id": "prod123",
-                        "name": "Wireless Headphones Pro",
-                        "description": "Premium wireless headphones",
-                        "category": "Electronics",
-                        "price": 149.99,
-                        "specifications": {"battery_life": "40 hours"},
-                        "image_url": "https://example.com/image.jpg",
-                        "stock": 25,
-                        "tags": ["wireless", "bluetooth"],
+                        "sku": "18470962",
+                        "name": "Apple AirPods 4",
+                        "shortDescription": "Exceptional comfort and audio performance.",
+                        "customerRating": 4.0,
+                        "productUrl": "https://www.bestbuy.ca/en-ca/product/18470962",
+                        "regularPrice": 179.99,
+                        "salePrice": 149.99,
+                        "categoryName": "Wireless Earbuds & Earphones",
+                        "isOnSale": True,
                         "relevance_score": 0.92,
                     }
                 ],
@@ -93,10 +113,10 @@ class ChatResponse(BaseModel):
 class ActionResponse(BaseModel):
     """Action response model."""
 
-    success: bool = Field(..., description="Whether action was successful")
-    message: str = Field(..., description="Action result message")
-    action: ActionType = Field(..., description="Action that was performed")
-    product_id: str = Field(..., description="Product ID")
+    success: bool = Field(..., description="Whether the action succeeded")
+    message: str = Field(..., description="Result message")
+    action: IntentType = Field(..., description="Action that was executed")
+    product_id: str = Field(..., description="Product SKU that was acted on")
     details: Optional[dict[str, Any]] = Field(None, description="Additional action details")
 
     class Config:
@@ -105,12 +125,19 @@ class ActionResponse(BaseModel):
         json_schema_extra = {
             "example": {
                 "success": True,
-                "message": "Product details have been sent to your email",
+                "message": "Product details sent to user@example.com",
                 "action": "email",
-                "product_id": "prod123",
-                "details": {"email": "user@example.com", "sent_at": "2024-01-01T12:00:00"},
+                "product_id": "18470962",
+                "details": {"email": "user@example.com"},
             }
         }
+
+
+class ErrorResponse(BaseModel):
+    """Error response model."""
+
+    error: str
+    detail: Optional[str] = None
 
 
 class HealthResponse(BaseModel):
@@ -119,11 +146,3 @@ class HealthResponse(BaseModel):
     status: str
     version: str
     services: dict[str, str]
-
-
-class ErrorResponse(BaseModel):
-    """Error response model."""
-
-    error: str
-    message: str
-    details: Optional[dict[str, Any]] = None

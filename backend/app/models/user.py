@@ -36,6 +36,10 @@ class UserInDB(UserBase):
 
     createdAt: datetime = Field(default_factory=datetime.utcnow)
     updatedAt: datetime = Field(default_factory=datetime.utcnow)
+    firstName: str
+    lastName: str
+    email: EmailStr
+    phone: str
 
     class Config:
         """Pydantic config."""

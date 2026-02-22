@@ -9,19 +9,17 @@ const api = axios.create({
   },
 });
 
-// Request interceptor to add user ID
+// Attach user ID to every request
 api.interceptors.request.use(
   (config) => {
     const userId = localStorage.getItem('userId') || 'user_001';
     config.headers['X-User-ID'] = userId;
     return config;
   },
-  (error) => {
-    return Promise.reject(error);
-  }
+  (error) => Promise.reject(error)
 );
 
-// Response interceptor for error handling
+// Global error logging
 api.interceptors.response.use(
   (response) => response,
   (error) => {
@@ -31,10 +29,18 @@ api.interceptors.response.use(
 );
 
 export const chatAPI = {
-  sendMessage: async (query, conversationId = null) => {
+  /**
+   * Send a chat message.
+   * @param {string} query - User's message
+   * @param {string|null} conversationId - Ongoing conversation ID
+   * @param {string[]} lastProductIds - SKUs of products shown in the last response
+   *   (used by the backend intent chain to detect email/purchase requests)
+   */
+  sendMessage: async (query, conversationId = null, lastProductIds = []) => {
     const response = await api.post('/chat', {
       query,
       conversation_id: conversationId,
+      last_product_ids: lastProductIds,
     });
     return response.data;
   },

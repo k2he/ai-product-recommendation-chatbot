@@ -63,6 +63,11 @@ class EmailService:
                     color: #4CAF50;
                     font-weight: bold;
                 }}
+                .sale-price {{
+                    font-size: 24px;
+                    color: #4CAF50;
+                    font-weight: bold;
+                }}
                 .specs {{
                     margin: 15px 0;
                 }}
@@ -84,27 +89,24 @@ class EmailService:
                     <p>Here's the product information you requested:</p>
                     
                     <div class="product-card">
-                        {f'<img src="{product.image_url}" alt="{product.name}" class="product-image">' if product.image_url else ''}
+                        {f'<img src="{product.highResImage}" alt="{product.name}" class="product-image">' if product.highResImage else ''}
                         
                         <h2>{product.name}</h2>
-                        <p><strong>Category:</strong> {product.category}</p>
-                        <p class="price">${product.price:.2f}</p>
+                        <p><strong>Category:</strong> {product.categoryName}</p>
                         
-                        <h3>Description</h3>
-                        <p>{product.description}</p>
+                        <p style="margin: 10px 0; font-family: Arial, sans-serif;">
+                            <span style="color: #0000FF; font-weight: bold; font-size: 1.2em;">${product.salePrice:.2f}</span> 
+                            <span style="color: #888; text-decoration: line-through; margin-left: 10px;">${product.regularPrice:.2f}</span>
+                        </p>
                         
-                        {f'''
-                        <h3>Specifications</h3>
-                        <div class="specs">
-                            {''.join(f'<p><strong>{k}:</strong> {v}</p>' for k, v in product.specifications.items())}
-                        </div>
-                        ''' if product.specifications else ''}
-                        
-                        <p><strong>Availability:</strong> {product.stock} units in stock</p>
-                        
-                        {f'<p><strong>Tags:</strong> {", ".join(product.tags)}</p>' if product.tags else ''}
-                    </div>
+                        {f'''<p style="color: #28a745; font-weight: bold; margin: 5px 0;">
+                            Save ${product.regularPrice - product.salePrice:.2f} CAD
+                        </p>''' if product.isOnSale else ''}
                     
+                        <h3>Description</h3>
+                        <p>{product.shortDescription}</p>
+                    </div>
+
                     <p>If you have any questions or would like to make a purchase, please contact us.</p>
                 </div>
                 <div class="footer">
@@ -139,12 +141,12 @@ class EmailService:
             Here's the product information you requested:
 
             Product: {product.name}
-            Category: {product.category}
-            Price: ${product.price:.2f}
-
-            Description: {product.description}
-
-            Availability: {product.stock} units in stock
+            Category: {product.categoryName}
+            Regular Price: ${product.regularPrice:.2f}
+            Sale Price: ${product.salePrice:.2f}
+            Savings: ${product.regularPrice - product.salePrice:.2f} ({'On Sale!' if product.isOnSale else 'No Sale'})
+            
+            Description: {product.shortDescription}
 
             If you have any questions or would like to make a purchase, please contact us.
 
