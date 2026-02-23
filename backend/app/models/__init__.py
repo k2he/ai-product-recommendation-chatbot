@@ -12,6 +12,7 @@ from app.models.request import (
     IntentType,
 )
 from app.models.user import UserInDB
+from app.models.state import AgentState
 
 __all__ = [
     # User models
@@ -20,6 +21,8 @@ __all__ = [
     "Product",
     "ProductBase",
     "ProductDocument",
+    # Agent state model
+    "AgentState",
     # Request/Response models
     "ChatRequest",
     "ChatResponse",
