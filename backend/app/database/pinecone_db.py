@@ -4,7 +4,9 @@ import logging
 from typing import Any, Optional
 
 from langchain_classic.chains.query_constructor.schema import AttributeInfo
+from langchain_classic.chains.query_constructor.ir import Comparison, Operation
 from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
+from langchain_classic.retrievers.self_query.pinecone import PineconeTranslator
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
@@ -14,6 +16,66 @@ from app.models.product import Product, ProductBase, ProductDocument
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+# ── Custom Pinecone Visitor with Type Conversion ──────────────────────────────
+
+class TypeConvertingPineconeTranslator(PineconeTranslator):
+    """Custom Pinecone translator that converts string values to proper types.
+
+    Some LLMs return numeric values as strings (e.g., "300" instead of 300),
+    which causes Pinecone to reject the filter. This visitor ensures that
+    numeric fields get proper numeric values.
+    """
+
+    # Define which fields should be numeric
+    NUMERIC_FIELDS = {"salePrice", "regularPrice", "customerRating"}
+
+    def visit_comparison(self, comparison: Comparison) -> dict:
+        """Override comparison visitor to convert string numbers to floats."""
+        # Convert string numbers to floats for numeric fields
+        if comparison.attribute in self.NUMERIC_FIELDS:
+            if isinstance(comparison.value, str):
+                try:
+                    comparison.value = float(comparison.value)
+                    logger.debug(
+                        "Converted %s value to float: %s",
+                        comparison.attribute,
+                        comparison.value,
+                    )
+                except ValueError:
+                    logger.warning(
+                        "Failed to convert %s value '%s' to float",
+                        comparison.attribute,
+                        comparison.value,
+                    )
+
+        # Call the parent implementation
+        return super().visit_comparison(comparison)
+
+    def visit_operation(self, operation: Operation) -> dict:
+        """Override operation visitor to ensure all nested comparisons are type-converted."""
+        # Process all arguments to ensure type conversion happens recursively
+        for arg in operation.arguments:
+            if isinstance(arg, Comparison) and arg.attribute in self.NUMERIC_FIELDS:
+                if isinstance(arg.value, str):
+                    try:
+                        arg.value = float(arg.value)
+                        logger.debug(
+                            "Converted %s value to float in operation: %s",
+                            arg.attribute,
+                            arg.value,
+                        )
+                    except ValueError:
+                        logger.warning(
+                            "Failed to convert %s value '%s' to float in operation",
+                            arg.attribute,
+                            arg.value,
+                        )
+
+        # Call the parent implementation
+        return super().visit_operation(operation)
+
 
 # ── Static metadata field definitions for SelfQueryingRetriever ───────────────
 # categoryName is omitted here — it is built dynamically in build_sqr()
@@ -159,12 +221,14 @@ class PineconeDB:
 
         metadata_field_info = _STATIC_METADATA_FIELDS + [category_field]
 
+        # Use custom translator that converts string numbers to proper types
         retriever = SelfQueryRetriever.from_llm(
             llm=llm,
             vectorstore=self.vectorstore,
             document_contents=_DOCUMENT_CONTENT_DESCRIPTION,
             metadata_field_info=metadata_field_info,
             search_kwargs={"k": settings.vector_search_top_k},
+            structured_query_translator=TypeConvertingPineconeTranslator(),
             # When SQR cannot parse a filter it falls back to unfiltered search
             enable_limit=False,
             verbose=True,
