@@ -2,20 +2,6 @@ import React, { useEffect, useRef } from 'react';
 import { Bot, User, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import ProductCard from './ProductCard';
 
-/**
- * Split assistant message content on the ---CTA--- marker.
- * Returns { body: string, cta: string | null }
- */
-const splitCTA = (content) => {
-  const marker = '---CTA---';
-  const idx = content.indexOf(marker);
-  if (idx === -1) return { body: content.trim(), cta: null };
-  return {
-    body: content.slice(0, idx).trim(),
-    cta: content.slice(idx + marker.length).trim(),
-  };
-};
-
 const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
   const messagesEndRef = useRef(null);
 
@@ -59,7 +45,6 @@ const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
 
       /* ── Assistant message ─────────────────────────────────────────── */
       case 'assistant': {
-        const { body, cta } = splitCTA(message.content);
         return (
           <div key={message.id} className="flex justify-start mb-4">
             <div className="flex items-start gap-2 max-w-[90%]">
@@ -70,7 +55,7 @@ const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
 
                 {/* Main response text */}
                 <div className="bg-gray-100 rounded-lg rounded-tl-none px-4 py-3 mb-2">
-                  <p className="text-sm text-gray-800 whitespace-pre-wrap">{body}</p>
+                  <p className="text-sm text-gray-800 whitespace-pre-wrap">{message.content}</p>
                   {message.source && (
                     <p className="text-xs text-gray-400 mt-2">
                       Source:{' '}
@@ -91,32 +76,27 @@ const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
 
                 {/* Product cards grid */}
                 {message.products && message.products.length > 0 && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-2">
-                    {message.products.map((product) => (
-                      <ProductCard
-                        key={product.sku}
-                        product={product}
-                        onPurchase={onPurchase}
-                        onEmail={onEmail}
-                        loading={loading}
-                      />
-                    ))}
-                  </div>
-                )}
+                  <>
+                    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-2">
+                      {message.products.map((product) => (
+                        <ProductCard
+                          key={product.sku}
+                          product={product}
+                          onPurchase={onPurchase}
+                          onEmail={onEmail}
+                          loading={loading}
+                        />
+                      ))}
+                    </div>
 
-                {/* CTA banner — only rendered when the LLM included ---CTA--- */}
-                {cta && (
-                  <div className="flex items-start gap-2 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 mb-3 mt-4">
-                    <span className="text-lg leading-none mt-0.5">📬</span>
-                    <p
-                      className="text-sm font-semibold text-blue-700 leading-snug"
-                      dangerouslySetInnerHTML={{
-                        __html: cta
-                          .replace(/^📬\s*/, '') // strip emoji if LLM included it in text
-                          .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>'),
-                      }}
-                    />
-                  </div>
+                    {/* CTA banner — always shown when products are present */}
+                    <div className="flex items-start gap-2 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 mt-4">
+                      <span className="text-lg leading-none mt-0.5">📬</span>
+                      <p className="text-sm font-semibold text-blue-700 leading-snug">
+                        Want to go further? <strong>Send these product details to your email</strong> or <strong>purchase one right now</strong> — just let me know!
+                      </p>
+                    </div>
+                  </>
                 )}
 
               </div>
