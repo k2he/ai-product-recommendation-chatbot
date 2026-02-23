@@ -1,12 +1,14 @@
-"""LangChain-based chatbot workflow.
+"""LangChain-based chatbot workflow using Tool-Calling Agent.
 
-Chains / retrievers:
-  1. intent_chain  — LLM classifies user message as 'search', 'email', or 'purchase'
-  2. sqr           — SelfQueryingRetriever: decomposes the query into a semantic
-                     search string + Pinecone metadata filter in one LLM call,
-                     then runs the vector search. Replaces the old rephrase_chain
-                     + manual metadata_filter plumbing entirely.
-  3. response_chain — LLM generates a friendly recommendation response with a CTA
+Architecture:
+  Single Agent with 4 Tools:
+    1. search_products  — Search product catalog via SelfQueryingRetriever
+    2. send_product_email — Email product details to user
+    3. purchase_product — Place an order for a product
+    4. search_web — Search the web for factual questions (via Tavily)
+
+  The LLM decides which tool(s) to call based on the user's message.
+  No explicit intent classification - the agent handles routing directly.
 """
 
 import json
@@ -15,34 +17,37 @@ from pathlib import Path
 from typing import Any, Optional
 
 from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
-from langchain_core.output_parsers import StrOutputParser
-from langchain_core.prompts import PromptTemplate
 from langchain_ollama import ChatOllama
 from langchain.agents import create_agent
 
 from app.config import get_settings
 from app.database.mongodb import mongodb
 from app.database.pinecone_db import pinecone_db
-from app.models import UserInDB
+from app.models import UserInDB, AgentState
 from app.models.product import Product
-from app.models.request import IntentResponse, IntentType
+from app.models.request import IntentType
 from app.services.email_service import email_service
-from app.services.tavily_service import search_web, tavily_service
+from app.tools import (
+    create_search_products_tool,
+    create_email_tool,
+    create_purchase_tool,
+    search_web,
+    is_web_search_available,
+)
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
 
 class ChatbotService:
-    """LangChain-based chatbot service using SelfQueryingRetriever."""
+    """LangChain-based chatbot service using Tool-Calling Agent."""
 
     def __init__(self) -> None:
-        """Initialise the chatbot service.
+        """Initialize the chatbot service.
 
         Build order:
           1. LLM
-          2. intent_chain and response_chain (no external deps)
-          3. Load categories.json → build SQR (needs vectorstore + LLM + categories)
+          2. SQR is lazily initialized on first use
 
         The vectorstore is already connected by the time this constructor runs
         because pinecone_db.connect() is called in main.py's lifespan handler
@@ -54,82 +59,16 @@ class ChatbotService:
             temperature=settings.ollama_temperature,
         )
 
-        # sqr is lazily initialised on first use so that the service module can
+        # SQR is lazily initialized on first use so that the service module can
         # be imported before Pinecone has connected (e.g. during test collection).
         self.sqr: Optional[SelfQueryRetriever] = None
 
-        self._build_chains()
-
-    # ── Chain / retriever construction ─────────────────────────────────────────
-
-    def _build_chains(self) -> None:
-        """Build intent_chain and response_chain."""
-
-        # ── Chain 1: Intent Detection (with Structured Output) ────────────────
-        intent_prompt = PromptTemplate.from_template(
-            """Classify the user's intent for a shopping assistant chatbot.
-
-INTENT TYPES:
-• search - User is searching for products or asking about product availability
-  Examples: "show me laptops", "do you have wireless headphones", "gaming monitors under $500"
-
-• email - User wants product details sent via email
-  Examples: "send it to me", "email that", "can you email me the laptop specs"
-
-• purchase - User wants to buy/order a product
-  Examples: "I'll take it", "buy the Sony ones", "order that headset"
-
-• general_chat - User is making conversation OR asking non-product questions
-  Examples: "how are you", "tell me a joke", "good morning", "thank you",
-            "what's the weather in Toronto", "who won the Super Bowl", "latest tech news"
-
-CONTEXT:
-Previously shown products: {last_product_names}
-
-RULES:
-- Default to 'search' if the query mentions ANY product-related keywords
-- Use 'general_chat' for ALL non-product queries (greetings, jokes, factual questions)
-- Extract product name hint if mentioned (for email/purchase intents)
-
-USER MESSAGE: {query}"""
-        )
-        # Use structured output - returns IntentResponse directly
-        self.intent_chain = intent_prompt | self.llm.with_structured_output(
-            IntentResponse
-        )
-
-        # ── Chain 2: Response Generation ───────────────────────────────────────
-        response_prompt = PromptTemplate.from_template(
-            """Generate a friendly product recommendation response for an e-commerce shopping assistant.
-
-USER: {user_name}
-FOUND: {has_results}
-SOURCE: {source}
-
-PRODUCTS:
-{products}
-
-RESPONSE GUIDELINES:
-• Greet {user_name} by first name with a warm, conversational tone
-• Summarize findings and highlight key selling points (price, rating, sales) for top 3 products
-• Keep it concise: 3-5 sentences maximum
-
-IF PRODUCTS FOUND, end with exactly:
----CTA---
-📬 Want to go further? **Send these product details to your email** or **purchase one right now** — just let me know!
-
-IF NO PRODUCTS FOUND:
-• Apologize politely and suggest trying different keywords
-• Omit the CTA section
-
-Generate response:"""
-        )
-        self.response_chain = response_prompt | self.llm | StrOutputParser()
+    # ── SQR Construction ───────────────────────────────────────────────────────
 
     def _get_or_build_sqr(self) -> SelfQueryRetriever:
         """Return the SQR, building it on first call.
 
-        Lazy initialisation lets the module load before Pinecone connects,
+        Lazy initialization lets the module load before Pinecone connects,
         and ensures categories.json is read after load_products.py has written it.
         """
         if self.sqr is not None:
@@ -138,8 +77,6 @@ Generate response:"""
         categories = self._load_categories()
         self.sqr = pinecone_db.build_sqr(llm=self.llm, categories=categories)
         return self.sqr
-
-    # ── Helpers ────────────────────────────────────────────────────────────────
 
     def _load_categories(self) -> list[str]:
         """Read category list from categories.json written by load_products.py."""
@@ -162,26 +99,16 @@ Generate response:"""
             logger.warning("Failed to load categories.json: %s", e)
             return []
 
-
-    async def _get_user_info(self, user_id: str) -> Optional[UserInDB]:
-        """Retrieve user document from MongoDB."""
-        try:
-            return await mongodb.get_user(user_id)
-        except Exception as e:
-            logger.warning("Failed to retrieve user %s: %s", user_id, e)
-            return None
+    # ── Core Methods ───────────────────────────────────────────────────────────
 
     async def _run_sqr(self, query: str) -> list[Product]:
         """Run the SelfQueryingRetriever and map Documents → Product models.
 
         SQR handles both query decomposition and the Pinecone vector search
-        with metadata filtering in a single call. The LLM inside SQR interprets
-        the query, extracts any filters, and translates them to Pinecone syntax
-        automatically.
+        with metadata filtering in a single call.
         """
         retriever = self._get_or_build_sqr()
         try:
-            # SQR.ainvoke returns a list of LangChain Document objects
             docs = await retriever.ainvoke(query)
         except Exception as e:
             logger.error("SQR retrieval failed: %s", e)
@@ -203,357 +130,158 @@ Generate response:"""
                         categoryName=meta.get("categoryName", ""),
                         isOnSale=bool(meta.get("isOnSale", False)),
                         highResImage=meta.get("highResImage") or None,
-                        relevance_score=None,  # SQR does not expose scores
+                        relevance_score=None,
                     )
                 )
             except Exception as e:
                 logger.warning("Skipping malformed product document: %s", e)
         return products
 
-
-    async def _generate_response(
-        self,
-        user_name: str,
-        products: list[Product],
-        has_results: bool,
-        source: str,
-    ) -> str:
-        """Run the response generation chain."""
-        if products:
-            lines = []
-            for i, p in enumerate(products[:5], 1):
-                sale_tag = " 🏷️ ON SALE" if p.isOnSale else ""
-                rating = f" | ⭐ {p.customerRating}/5" if p.customerRating else ""
-                lines.append(
-                    f"{i}. {p.name}{sale_tag}{rating}\n"
-                    f"   Price: ${p.salePrice:.2f} CAD"
-                    + (f" (was ${p.regularPrice:.2f})" if p.isOnSale else "")
-                    + f"\n   Category: {p.categoryName}\n"
-                    f"   {p.shortDescription[:180]}..."
-                )
-            product_text = "\n\n".join(lines)
-        else:
-            product_text = "No products found."
-
-        result = await self.response_chain.ainvoke({
-            "user_name": user_name,
-            "has_results": str(has_results),
-            "source": source,
-            "products": product_text,
-        })
-        return result.strip()
-
-
-    async def _detect_intent(
-        self,
-        user_query: str,
-        last_product_ids: list[str],
-    ) -> tuple[IntentType, Optional[str]]:
-        """Detect user intent and extract product hint.
-
-        Returns:
-            Tuple of (intent_enum, product_hint)
-        """
-        # Resolve product names for the intent prompt context
-        last_product_names = "none"
-        if last_product_ids:
-            fetched_names = []
-            for pid in last_product_ids[:3]:
-                p = await pinecone_db.get_product_by_id(pid)
-                if p:
-                    fetched_names.append(p.name)
-            if fetched_names:
-                last_product_names = ", ".join(fetched_names)
-
+    async def _get_user_info(self, user_id: str) -> Optional[UserInDB]:
+        """Retrieve user document from MongoDB."""
         try:
-            intent_response = await self.intent_chain.ainvoke({
-                "query": user_query,
-                "last_product_names": last_product_names,
-            })
-            # Use intent_response.intent directly (already IntentType)
-            intent_enum = intent_response.intent
-            product_hint = intent_response.product_hint
+            return await mongodb.get_user(user_id)
         except Exception as e:
-            logger.warning("Intent detection failed, defaulting to 'search': %s", e)
-            intent_enum, product_hint = IntentType.SEARCH, None
-
-        logger.info("Intent: '%s' | product_hint: '%s'", intent_enum, product_hint)
-        return intent_enum, product_hint
-
-    async def _resolve_target_product_id(
-        self,
-        last_product_ids: list[str],
-        product_hint: Optional[str],
-    ) -> str:
-        """Resolve which product ID to use for email/purchase actions.
-
-        If product_hint is provided and matches one of the last products,
-        use that. Otherwise, use the first product.
-        """
-        target_id = last_product_ids[0]
-
-        if product_hint and len(last_product_ids) > 1:
-            for pid in last_product_ids:
-                p = await pinecone_db.get_product_by_id(pid)
-                if p and product_hint.lower() in p.name.lower():
-                    target_id = pid
-                    break
-
-        return target_id
-
-    async def _handle_action_intent(
-        self,
-        intent: IntentType,
-        product_hint: Optional[str],
-        last_product_ids: list[str],
-        user_info: Optional[UserInDB],
-        conversation_id: str,
-    ) -> Optional[dict[str, Any]]:
-        """Handle email or purchase intent.
-
-        Args:
-            intent: Detected intent (EMAIL or PURCHASE)
-            product_hint: Product name hint extracted from query
-            last_product_ids: Product SKUs from previous response
-            user_info: Pre-fetched user info to avoid duplicate DB call
-            conversation_id: Conversation identifier
-
-        Returns:
-            Response dict if action was executed, None if intent is not email/purchase
-        """
-        if intent not in (IntentType.EMAIL, IntentType.PURCHASE) or not last_product_ids:
+            logger.warning("Failed to retrieve user %s: %s", user_id, e)
             return None
 
-        target_id = await self._resolve_target_product_id(last_product_ids, product_hint)
+    def _build_tools(
+        self,
+        state: AgentState,
+        user_name: str,
+        user_email: str,
+        user_id: str,
+    ) -> list:
+        """Build the tools list with injected context.
 
-        action_result = await self.execute_action(
-            action=intent,
-            product_id=target_id,
-            user_info=user_info,
+        Args:
+            state: Shared AgentState for tools to store results
+            user_name: User's first name
+            user_email: User's email address
+            user_id: User's ID
+
+        Returns:
+            List of LangChain tool functions
+        """
+        tools = []
+
+        # Tool 1: Search products
+        search_tool = create_search_products_tool(
+            run_sqr=self._run_sqr,
+            state=state,
         )
+        tools.append(search_tool)
 
-        return {
-            "message": action_result["message"],
-            "products": [],
-            "conversation_id": conversation_id,
-            "has_results": False,
-            "source": "action",
-            "error": None if action_result["success"] else action_result.get("error"),
-        }
-
-    async def _handle_general_chat(
-        self,
-        user_query: str,
-        user_info: UserInDB,
-        conversation_id: str,
-    ) -> dict[str, Any]:
-        """Handle general conversational queries using agent with conditional Tavily tool.
-
-        Uses create_agent with tools list that's populated only if Tavily is available.
-        Agent works identically with or without tools.
-
-        Args:
-            user_query: User's conversational message
-            user_info: User information
-            conversation_id: Conversation identifier
-
-        Returns:
-            Response dict with conversational reply
-        """
-        user_name = user_info.firstName if user_info.firstName else "there"
-
-        try:
-            # Conditionally include search_web tool based on Tavily availability
-            tools = [search_web] if tavily_service.is_available() else []
-
-            if not tools:
-                logger.info("Tavily not available - agent will respond without web search")
-
-            # System message (works for both with/without tools)
-            system_message = f"""You are a friendly e-commerce shopping assistant chatting with {user_name}.
-
-CAPABILITIES:
-• You can have casual conversations (greetings, jokes, small talk)
-• You have access to tools for factual questions (weather, news, sports, etc.)
-• You should ALWAYS guide the conversation back to shopping
-
-RESPONSE GUIDELINES:
-• Be warm, conversational, and helpful
-• For casual chat: Respond naturally and ask how they're doing
-• For greetings like "how are you", respond with "I'm great, thanks for asking! How are you doing today?"
-• For factual questions: Use available tools to get current information
-• ALWAYS end your response by mentioning shopping opportunities:
-  "Feel free to tell me what products you're looking for - I'm here to help you find exactly what you need!"
-• Keep responses concise (2-4 sentences total)"""
-
-            # Create agent (works with empty or populated tools list)
-            agent_executor = create_agent(
-                model=self.llm,
-                tools=tools,
-                system_prompt=system_message,
-            )
-
-            # Execute agent (same code path for both scenarios)
-            result = await agent_executor.ainvoke({"messages": [("user", user_query)]})
-
-            # Extract response from messages (unified logic)
-            messages = result.get("messages", [])
-            if messages:
-                response_text = messages[-1].content if hasattr(messages[-1], 'content') else str(messages[-1])
-            else:
-                response_text = "I apologize, but I couldn't generate a response."
-
-            # Determine source based on whether tool was used
-            tool_used = any(
-                hasattr(msg, 'tool_calls') and msg.tool_calls
-                for msg in messages
-                if hasattr(msg, 'tool_calls')
-            )
-            source = "general_chat_with_search" if tool_used else "general_chat"
-
-
-            return {
-                "message": response_text.strip(),
-                "products": [],
-                "conversation_id": conversation_id,
-                "has_results": False,
-                "source": source,
-                "error": None,
-            }
-
-        except Exception as e:
-            logger.error("General chat handler failed: %s", e)
-            # Fallback response
-            return {
-                "message": (
-                    f"Hi {user_name}! I'm your shopping assistant. "
-                    "I'm here to help you search for products, send details via email, "
-                    "or complete purchases. What can I help you find today?"
-                ),
-                "products": [],
-                "conversation_id": conversation_id,
-                "has_results": False,
-                "source": "general_chat",
-                "error": str(e),
-            }
-
-
-    async def _handle_search_workflow(
-        self,
-        user_query: str,
-        user_info: UserInDB,
-        conversation_id: str,
-    ) -> dict[str, Any]:
-        """Handle the search workflow (Steps 1-4).
-
-        Args:
-            user_query: User's search query
-            user_info: User information (required, must be pre-fetched by caller)
-            conversation_id: Conversation identifier
-
-        Returns:
-            Response dict with search results and generated message
-        """
-        # ── Step 1: User info validation ───────────────────────────────────
-        if not user_info:
-            raise ValueError("user_info is required but was not provided")
-
-        logger.info("Step 1: Using user info for: %s", user_info.userId)
-        user_name = user_info.firstName if user_info.firstName else "there"
-
-        # ── Step 2: SelfQueryingRetriever ─────────────────────────────────
-        logger.info("Step 2: Running SelfQueryingRetriever")
-        products = await self._run_sqr(user_query)
-        search_source = "vector_db" if products else "none"
-        logger.info("SQR returned %d products", len(products))
-
-        # ── Step 3: Generate response ──────────────────────────────────────
-        logger.info("Step 3: Generating response")
-        response_message = await self._generate_response(
+        # Tool 2: Send product email
+        email_tool = create_email_tool(
+            email_service=email_service,
+            get_product_by_id=pinecone_db.get_product_by_id,
+            state=state,
             user_name=user_name,
-            products=products,
-            has_results=bool(products),
-            source=search_source,
+            user_email=user_email,
         )
+        tools.append(email_tool)
 
-        logger.info("Workflow complete — %d products returned", len(products))
-        return {
-            "message": response_message,
-            "products": products,
-            "conversation_id": conversation_id,
-            "has_results": bool(products),
-            "source": search_source,
-            "error": None,
-        }
+        # Tool 3: Purchase product
+        purchase_tool = create_purchase_tool(
+            get_product_by_id=pinecone_db.get_product_by_id,
+            state=state,
+            user_name=user_name,
+            user_email=user_email,
+            user_id=user_id,
+        )
+        tools.append(purchase_tool)
 
-    async def _execute_email_action(
+        # Tool 4: Web search (only if available)
+        if is_web_search_available():
+            tools.append(search_web)
+
+        return tools
+
+    def _build_system_prompt(
         self,
         user_name: str,
-        user_email: str,
-        product: Product,
-    ) -> dict[str, Any]:
-        """Execute email action - send product details to user.
-
-        Returns:
-            Action result dict with success status and message
-        """
-        try:
-            await email_service.send_product_email(
-                recipient_email=user_email,
-                recipient_name=user_name,
-                product=product,
-            )
-            return {
-                "success": True,
-                "message": (
-                    f"Done, {user_name}! I've sent the details for "
-                    f"**{product.name}** to {user_email}. Check your inbox! 📧"
-                ),
-                "details": {"email": user_email, "product_name": product.name},
-            }
-        except Exception as e:
-            logger.error("Email sending failed: %s", e)
-            return {
-                "success": False,
-                "message": "Failed to send email. Please try again.",
-                "error": str(e),
-            }
-
-    async def _execute_purchase_action(
-        self,
-        user_name: str,
-        user_email: str,
-        product: Product,
-        product_id: str,
-        user_info: UserInDB,
-    ) -> dict[str, Any]:
-        """Execute purchase action - place order for product.
+        last_product_ids: list[str],
+        last_product_names: str,
+    ) -> str:
+        """Build the system prompt for the agent.
 
         Args:
             user_name: User's first name
-            user_email: User's email address
-            product: Product to purchase
-            product_id: Product SKU
-            user_info: User information for generating order ID
+            last_product_ids: Product SKUs from previous response
+            last_product_names: Formatted string of product names
 
         Returns:
-            Action result dict with success status and message
+            System prompt string
         """
-        order_id = f"ORD-{product_id}-{user_info.userId[-4:]}"
-        return {
-            "success": True,
-            "message": (
-                f"Great choice, {user_name}! Your order for **{product.name}** "
-                f"has been placed. Order ID: `{order_id}`. "
-                f"Total: ${product.salePrice:.2f} CAD. "
-                f"A confirmation will be sent to {user_email}. 🛒"
-            ),
-            "details": {
-                "order_id": order_id,
-                "product_name": product.name,
-                "price": product.salePrice,
-            },
-        }
+        context_section = ""
+        if last_product_ids:
+            context_section = f"""
+CONVERSATION CONTEXT:
+Previously shown products: {last_product_names}
+Product SKUs for reference: {', '.join(last_product_ids[:3])}
+If the user refers to "it", "that", or "the product", use the first SKU: {last_product_ids[0]}
+"""
+
+        return f"""You are a friendly e-commerce shopping assistant chatting with {user_name}.
+{context_section}
+BEHAVIOR GUIDELINES:
+• Be warm, conversational, and helpful
+• For greetings or small talk, respond naturally then guide toward shopping
+• After showing products, end with: "📬 Want to go further? **Send these product details to your email** or **purchase one right now** — just let me know!"
+• Keep responses concise (3-5 sentences)
+
+CONTEXT HANDLING:
+• When the user says "it", "that", or "the product" without specifying, use the first product SKU from context above
+• For email/purchase actions, you MUST provide a valid product SKU from search results or conversation context"""
+
+    async def _resolve_product_names(self, product_ids: list[str]) -> str:
+        """Resolve product IDs to names for context."""
+        if not product_ids:
+            return "none"
+
+        names = []
+        for pid in product_ids[:3]:
+            product = await pinecone_db.get_product_by_id(pid)
+            if product:
+                names.append(f"{product.name} (SKU: {pid})")
+
+        return ", ".join(names) if names else "none"
+
+    def _extract_response_from_agent(self, result: dict) -> str:
+        """Extract the final response text from agent result."""
+        messages = result.get("messages", [])
+        if messages:
+            last_msg = messages[-1]
+            if hasattr(last_msg, 'content'):
+                return last_msg.content
+            return str(last_msg)
+        return "I apologize, but I couldn't generate a response."
+
+    def _determine_source(self, result: dict, state: AgentState) -> str:
+        """Determine the source based on agent execution and state."""
+        # If state has explicit source from tools, use it
+        if state.source:
+            return state.source
+
+        # Check if any tool was called
+        messages = result.get("messages", [])
+        tool_used = any(
+            hasattr(msg, 'tool_calls') and msg.tool_calls
+            for msg in messages
+            if hasattr(msg, 'tool_calls')
+        )
+
+        if tool_used:
+            # Check for web search specifically
+            for msg in messages:
+                if hasattr(msg, 'tool_calls') and msg.tool_calls:
+                    for tc in msg.tool_calls:
+                        if tc.get("name") == "search_web":
+                            return "general_chat_with_search"
+            return "vector_db"  # Default for other tools
+
+        return "general_chat"
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -564,7 +292,7 @@ RESPONSE GUIDELINES:
         conversation_id: str,
         last_product_ids: list[str],
     ) -> dict:
-        """Execute the full chatbot workflow.
+        """Execute the chatbot workflow using a tool-calling agent.
 
         Args:
             user_query: User's query message
@@ -572,52 +300,82 @@ RESPONSE GUIDELINES:
             conversation_id: Conversation identifier
             last_product_ids: Product SKUs from previous assistant response
 
-        Workflow:
-          Step 0 — intent_chain (LLM)
-                   → 'email' or 'purchase': resolve product, call execute_action, return
-                   → 'search': continue
-          Step 1 — User validation
-          Step 2 — SelfQueryingRetriever (single LLM call)
-                   Decomposes query into semantic string + metadata filter,
-                   runs Pinecone search with filter applied.
-          Step 3 — response_chain (LLM) generates friendly reply + CTA
+        Returns:
+            Response dict with message, products, and metadata
         """
         try:
-            logger.info("Starting workflow for query: '%s'", user_query)
+            logger.info("Starting agent workflow for query: '%s'", user_query)
 
-            # ── Validate user info ─────────────────────────────────────────────
+            # Validate user info
             if not user_info:
                 raise ValueError("user_info is required but was not provided")
 
             logger.info("Processing request for user: %s", user_info.userId)
 
-            # ── Step 0: Intent Detection ───────────────────────────────────────
-            logger.info("Step 0: Detecting intent")
+            # Extract user details
+            user_name = user_info.firstName if user_info.firstName else "there"
+            user_email = str(user_info.email)
+            user_id = user_info.userId
+
+            # Resolve product names for context
             last_product_ids = last_product_ids or []
+            last_product_names = await self._resolve_product_names(last_product_ids)
 
-            intent, product_hint = await self._detect_intent(user_query, last_product_ids)
+            # Create shared state for tools to populate
+            state = AgentState()
 
-            # ── Intent branch: general chat ────────────────────────────────────
-            if intent == IntentType.GENERAL_CHAT:
-                logger.info("Routing to general chat handler (with tool access)")
-                return await self._handle_general_chat(user_query, user_info, conversation_id)
-
-            # ── Intent branch: email or purchase ───────────────────────────────
-            action_response = await self._handle_action_intent(
-                intent, product_hint, last_product_ids, user_info, conversation_id
+            # Build tools with injected context
+            tools = self._build_tools(
+                state=state,
+                user_name=user_name,
+                user_email=user_email,
+                user_id=user_id,
             )
-            if action_response:
-                return action_response
 
-            # ── Search workflow ────────────────────────────────────────────────
-            return await self._handle_search_workflow(
-                user_query, user_info, conversation_id
+            # Build system prompt
+            system_prompt = self._build_system_prompt(
+                user_name=user_name,
+                last_product_ids=last_product_ids,
+                last_product_names=last_product_names,
             )
+
+            # Create and execute agent
+            logger.info("Creating agent with %d tools", len(tools))
+            agent_executor = create_agent(
+                model=self.llm,
+                tools=tools,
+                system_prompt=system_prompt,
+            )
+
+            result = await agent_executor.ainvoke({
+                "messages": [("user", user_query)]
+            })
+
+            # Extract response
+            response_text = self._extract_response_from_agent(result)
+            source = self._determine_source(result, state)
+            products = state.products
+            has_results = state.has_results
+
+            logger.info(
+                "Agent workflow complete — source: %s, products: %d",
+                source,
+                len(products),
+            )
+
+            return {
+                "message": response_text.strip(),
+                "products": products,
+                "conversation_id": conversation_id,
+                "has_results": has_results,
+                "source": source,
+                "error": None,
+            }
 
         except Exception as e:
-            logger.error("Workflow error: %s", e)
+            logger.error("Agent workflow error: %s", e)
             return {
-                "message": "I apologise, but I encountered an error. Please try again.",
+                "message": "I apologize, but I encountered an error. Please try again.",
                 "products": [],
                 "conversation_id": conversation_id,
                 "has_results": False,
@@ -633,16 +391,18 @@ RESPONSE GUIDELINES:
     ) -> dict[str, Any]:
         """Execute an email or purchase action for a specific product.
 
+        This method is kept for backward compatibility with the /action endpoint.
+
         Args:
-            action: The action to perform (EMAIL or PURCHASE)
+            action: The action to perform (IntentType.EMAIL or IntentType.PURCHASE)
             product_id: Product SKU
-            user_info: User information (required, must be pre-fetched by caller)
+            user_info: User information
 
         Returns:
             Action result dict with success status, message, and optional details
         """
+
         try:
-            # Validate user info
             if not user_info:
                 raise ValueError("user_info is required but was not provided")
 
@@ -655,28 +415,54 @@ RESPONSE GUIDELINES:
                     "error": "product_not_found",
                 }
 
-            # Extract user info
             user_name = user_info.firstName if user_info.firstName else "there"
             user_email = str(user_info.email)
 
-            # Execute action based on intent
+            # Execute action
             if action == IntentType.EMAIL:
-                return await self._execute_email_action(user_name, user_email, product)
-
-            elif action == IntentType.PURCHASE:
-                return await self._execute_purchase_action(
-                    user_name, user_email, product, product_id, user_info
+                await email_service.send_product_email(
+                    recipient_email=user_email,
+                    recipient_name=user_name,
+                    product=product,
                 )
 
+                return {
+                    "success": True,
+                    "message": (
+                        f"Done, {user_name}! I've sent the details for "
+                        f"**{product.name}** to {user_email}. Check your inbox! 📧"
+                    ),
+                    "details": {"email": user_email, "product_name": product.name},
+                }
+
+            elif action == IntentType.PURCHASE:
+                order_id = f"ORD-{product_id}-{user_info.userId[-4:]}"
+
+                return {
+                    "success": True,
+                    "message": (
+                        f"Great choice, {user_name}! Your order for **{product.name}** "
+                        f"has been placed. Order ID: `{order_id}`. "
+                        f"Total: ${product.salePrice:.2f} CAD. "
+                        f"A confirmation will be sent to {user_email}. 🛒"
+                    ),
+                    "details": {
+                        "order_id": order_id,
+                        "product_name": product.name,
+                        "price": product.salePrice,
+                    },
+                }
+
             else:
+                # Should never happen with enum validation, but good to have
                 return {
                     "success": False,
-                    "message": f"Unknown action: {action}",
-                    "error": "unknown_action"
+                    "message": f"Unknown action: {action.value}",
+                    "error": "unknown_action",
                 }
 
         except Exception as e:
-            logger.error("Action error (%s): %s", action, e)
+            logger.error("Action error (%s): %s", action.value, e)
             return {
                 "success": False,
                 "message": "Failed to execute action. Please try again.",
