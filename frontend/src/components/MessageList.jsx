@@ -83,7 +83,7 @@ const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
                         : message.source === 'general_chat'
                         ? 'Conversation'
                         : message.source === 'general_chat_with_search'
-                        ? 'Conversation with Web Search (Tool called)'
+                        ? 'Conversation with Web Search (Tavily)'
                         : 'N/A'}
                     </p>
                   )}
