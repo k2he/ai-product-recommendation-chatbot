@@ -349,6 +349,7 @@ CONTEXT HANDLING:
                 user_name=user_name,
                 user_email=user_email,
                 user_id=user_id,
+                user_info=user_info,
             )
 
             # Build system prompt
