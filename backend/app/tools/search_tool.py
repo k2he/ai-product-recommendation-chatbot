@@ -49,8 +49,8 @@ def create_search_products_tool(
             # Run the SelfQueryingRetriever
             products = await run_sqr(query)
 
-            # Store products in shared state for API response
-            state.products = products
+            # Append products to shared state for API response (accumulate across multiple searches)
+            state.products.extend(products)
             state.source = "vector_db" if products else "none"
             state.has_results = bool(products)
 
