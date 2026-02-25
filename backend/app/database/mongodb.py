@@ -8,6 +8,7 @@ from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo.errors import ConnectionFailure, DuplicateKeyError
 
 from app.config import get_settings
+from app.models import OrderInDB
 from app.models.user import UserInDB
 
 logger = logging.getLogger(__name__)
