@@ -148,6 +148,59 @@ class MongoDB:
         users = await cursor.to_list(length=limit)
         return [UserInDB(**user) for user in users]
 
+    # ── Purchase Order Methods ─────────────────────────────────────────────────
+
+    async def create_order(self, order: OrderInDB) -> OrderInDB:
+        """Create a new order."""
+        if self.db is None:
+            raise ConnectionError("Database not connected")
+
+        try:
+            order_data = order.model_dump()
+            order_data["createdAt"] = datetime.now(UTC)
+            order_data["updatedAt"] = datetime.now(UTC)
+
+            result = await self.db[settings.mongodb_purchase_orders_collection].insert_one(
+                order_data
+            )
+
+            if result.inserted_id:
+                created_order = await self.get_order(order.orderNumber)
+                if created_order:
+                    return created_order
+
+            raise ValueError("Failed to create order")
+
+        except DuplicateKeyError:
+            raise ValueError(f"Order with orderNumber '{order.orderNumber}' already exists")
+
+    async def get_order(self, order_number: str) -> Optional[OrderInDB]:
+        """Get order by order number."""
+        if self.db is None:
+            raise ConnectionError("Database not connected")
+
+        order_data = await self.db[settings.mongodb_purchase_orders_collection].find_one(
+            {"orderNumber": order_number}, {"_id": 0}
+        )
+
+        if order_data:
+            return OrderInDB(**order_data)
+        return None
+
+    async def get_user_orders(self, user_id: str) -> list[OrderInDB]:
+        """Get all orders for a user, sorted by order date descending."""
+        if self.db is None:
+            raise ConnectionError("Database not connected")
+
+        cursor = (
+            self.db[settings.mongodb_purchase_orders_collection]
+            .find({"userId": user_id}, {"_id": 0})
+            .sort("orderDate", -1)
+        )
+
+        orders_data = await cursor.to_list(length=None)
+        return [OrderInDB(**order) for order in orders_data]
+
 
 # Global MongoDB instance
 mongodb = MongoDB()

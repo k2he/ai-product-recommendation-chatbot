@@ -33,6 +33,8 @@ from app.tools import (
     create_purchase_tool,
     search_web,
     is_web_search_available,
+    create_user_info_tool,
+    create_purchase_history_tool,
 )
 
 logger = logging.getLogger(__name__)
@@ -151,6 +153,7 @@ class ChatbotService:
         user_name: str,
         user_email: str,
         user_id: str,
+        user_info: UserInDB,
     ) -> list:
         """Build the tools list with injected context.
 
@@ -159,6 +162,7 @@ class ChatbotService:
             user_name: User's first name
             user_email: User's email address
             user_id: User's ID
+            user_info: Full user information object
 
         Returns:
             List of LangChain tool functions
@@ -192,7 +196,21 @@ class ChatbotService:
         )
         tools.append(purchase_tool)
 
-        # Tool 4: Web search (only if available)
+        # Tool 4: Get user information
+        user_info_tool = create_user_info_tool(
+            state=state,
+            user_info=user_info,
+        )
+        tools.append(user_info_tool)
+
+        # Tool 5: Get purchase history
+        purchase_history_tool = create_purchase_history_tool(
+            state=state,
+            user_id=user_id,
+        )
+        tools.append(purchase_history_tool)
+
+        # Tool 6: Web search (only if available)
         if is_web_search_available():
             tools.append(search_web)
 
@@ -229,6 +247,7 @@ BEHAVIOR GUIDELINES:
 • Be warm, conversational, and helpful
 • For greetings or small talk, respond naturally WITHOUT mentioning email or purchase options
 • When showing products, provide a concise description to help the user understand their options
+• When user asks for account info or purchase history, use the appropriate tool
 • Keep responses concise (3-5 sentences)
 
 CONTEXT HANDLING:
@@ -380,6 +399,8 @@ CONTEXT HANDLING:
                 "conversation_id": conversation_id,
                 "has_results": False,
                 "source": "none",
+                "user_info": None,
+                "purchase_history": [],
                 "error": str(e),
             }
 

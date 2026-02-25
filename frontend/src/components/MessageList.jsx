@@ -1,6 +1,83 @@
-import React, { useEffect, useRef } from 'react';
-import { Bot, User, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { Bot, User, AlertCircle, CheckCircle, Loader2, UserCircle, Package, ChevronDown, ChevronUp, ShoppingBag } from 'lucide-react';
 import ProductCard from './ProductCard';
+
+/**
+ * OrderCard component - Displays a single order with collapsible line items
+ */
+const OrderCard = ({ order }) => {
+  const [isExpanded, setIsExpanded] = useState(false);
+
+  const orderDate = new Date(order.orderDate);
+  const formattedDate = orderDate.toLocaleDateString('en-US', {
+    month: 'long',
+    day: '2-digit',
+    year: 'numeric'
+  });
+
+  const itemCount = order.lineItems.length;
+  const itemWord = itemCount === 1 ? 'item' : 'items';
+
+  return (
+    <div className="bg-white border border-gray-200 rounded-lg shadow-sm mb-3">
+      {/* Order Header - Clickable to expand/collapse */}
+      <button
+        onClick={() => setIsExpanded(!isExpanded)}
+        className="w-full px-4 py-3 flex items-center justify-between hover:bg-gray-50 transition-colors"
+      >
+        <div className="flex items-center gap-3">
+          <Package className="w-5 h-5 text-gray-600" />
+          <div className="text-left">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-semibold text-gray-900">{formattedDate}</span>
+              <span className="text-xs text-gray-500">•</span>
+              <span className="text-xs text-gray-500">Order #{order.orderNumber}</span>
+            </div>
+            <div className="text-xs text-gray-600 mt-0.5">
+              {itemCount} {itemWord} • ${order.totalPrice.toFixed(2)}
+            </div>
+          </div>
+        </div>
+        {isExpanded ? (
+          <ChevronUp className="w-5 h-5 text-gray-400" />
+        ) : (
+          <ChevronDown className="w-5 h-5 text-gray-400" />
+        )}
+      </button>
+
+      {/* Line Items - Collapsible */}
+      {isExpanded && (
+        <div className="px-4 pb-3 border-t border-gray-100">
+          <div className="mt-3 space-y-2">
+            {order.lineItems.map((item, idx) => (
+              <div key={idx} className="flex items-center gap-3 p-2 hover:bg-gray-50 rounded">
+                <img
+                  src={item.imgUrl}
+                  alt={item.name}
+                  className="w-16 h-16 object-contain rounded border border-gray-200"
+                  onError={(e) => {
+                    e.target.src = 'https://via.placeholder.com/150?text=No+Image';
+                  }}
+                />
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-gray-900 truncate">{item.name}</p>
+                  <p className="text-xs text-gray-500 mt-0.5">
+                    SKU: {item.sku}
+                  </p>
+                  <div className="flex items-center gap-2 mt-1">
+                    <span className="text-xs text-gray-600">Qty: {item.quantity}</span>
+                    <span className="text-xs text-gray-400">•</span>
+                    <span className="text-sm font-semibold text-gray-900">${item.total.toFixed(2)}</span>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
   const messagesEndRef = useRef(null);
@@ -69,10 +146,57 @@ const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
                         ? 'Conversation'
                         : message.source === 'general_chat_with_search'
                         ? 'Conversation with Web Search (Tavily)'
+                        : message.source === 'user_info'
+                        ? 'User Account'
+                        : message.source === 'purchase_history'
+                        ? 'Order History'
                         : 'N/A'}
                     </p>
                   )}
                 </div>
+
+                {/* User Info Card */}
+                {message.userInfo && (
+                  <div className="bg-gradient-to-br from-blue-50 to-indigo-50 border border-blue-200 rounded-lg p-4 mt-2">
+                    <div className="flex items-start gap-3">
+                      <div className="flex-shrink-0 w-10 h-10 bg-blue-500 rounded-full flex items-center justify-center">
+                        <UserCircle className="w-6 h-6 text-white" />
+                      </div>
+                      <div className="flex-1">
+                        <h3 className="text-sm font-semibold text-gray-900 mb-2">Account Information</h3>
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-600 font-medium w-16">Name:</span>
+                            <span className="text-sm text-gray-900">{message.userInfo.firstName} {message.userInfo.lastName}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-600 font-medium w-16">Email:</span>
+                            <span className="text-sm text-gray-900">{message.userInfo.email}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-gray-600 font-medium w-16">Phone:</span>
+                            <span className="text-sm text-gray-900">{message.userInfo.phone}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Purchase History */}
+                {message.purchaseHistory && message.purchaseHistory.length > 0 && (
+                  <div className="mt-2">
+                    <div className="flex items-center gap-2 mb-3">
+                      <ShoppingBag className="w-5 h-5 text-gray-700" />
+                      <h3 className="text-sm font-semibold text-gray-900">
+                        Your Purchase History ({message.purchaseHistory.length} {message.purchaseHistory.length === 1 ? 'order' : 'orders'})
+                      </h3>
+                    </div>
+                    {message.purchaseHistory.map((order) => (
+                      <OrderCard key={order.orderNumber} order={order} />
+                    ))}
+                  </div>
+                )}
 
                 {/* Product cards grid */}
                 {message.products && message.products.length > 0 && (

@@ -53,6 +53,8 @@ export const useChat = (userName = 'there') => {
         products: response.products || [],
         hasResults: response.has_results,
         source: response.source,
+        userInfo: response.user_info || null,
+        purchaseHistory: response.purchase_history || [],
         timestamp: new Date().toISOString(),
       };
 

@@ -97,6 +97,8 @@ async def chat(
             conversation_id=result["conversation_id"],
             has_results=result["has_results"],
             source=result["source"],
+            user_info=result.get("user_info"),
+            purchase_history=result.get("purchase_history", []),
         )
 
     except HTTPException:

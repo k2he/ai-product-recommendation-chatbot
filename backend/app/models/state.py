@@ -1,10 +1,14 @@
 """Agent state model for chatbot execution."""
 
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 
 from pydantic import BaseModel, Field
 
 from app.models.product import Product
+
+if TYPE_CHECKING:
+    from app.models.user import UserInDB
+    from app.models.order import OrderInDB
 
 
 class AgentState(BaseModel):
@@ -20,11 +24,19 @@ class AgentState(BaseModel):
     )
     source: Optional[str] = Field(
         default=None,
-        description="Source of results: 'vector_db' (products from database), 'action' (email/purchase), 'general_chat' (conversation), 'general_chat_with_search' (conversation with search tool), or 'none' (no results)"
+        description="Source of results: 'vector_db', 'action', 'general_chat', 'general_chat_with_search', 'user_info', 'purchase_history', or 'none'"
     )
     has_results: bool = Field(
         default=False,
         description="Whether the search produced any results"
+    )
+    user_info: Optional["UserInDB"] = Field(
+        default=None,
+        description="User information when displaying account details"
+    )
+    purchase_history: list["OrderInDB"] = Field(
+        default_factory=list,
+        description="User's purchase history when displaying past orders"
     )
 
     model_config = {

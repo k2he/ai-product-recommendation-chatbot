@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     mongodb_url: str = Field(default="mongodb://localhost:27017")
     mongodb_database: str = "product_chatbot"
     mongodb_user_collection: str = "users"
+    mongodb_purchase_orders_collection: str = "purchase_orders"
     mongodb_max_pool_size: int = 10
     mongodb_min_pool_size: int = 1
 

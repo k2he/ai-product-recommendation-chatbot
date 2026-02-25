@@ -13,6 +13,7 @@ from app.models.request import (
 )
 from app.models.user import UserInDB
 from app.models.state import AgentState
+from app.models.order import OrderInDB, LineItem
 
 __all__ = [
     # User models
@@ -23,6 +24,9 @@ __all__ = [
     "ProductDocument",
     # Agent state model
     "AgentState",
+    # Order models
+    "OrderInDB",
+    "LineItem",
     # Request/Response models
     "ChatRequest",
     "ChatResponse",
