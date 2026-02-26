@@ -1,14 +1,15 @@
 """MongoDB database connection and operations."""
 
 import logging
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Optional
 
 from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from pymongo.errors import ConnectionFailure, DuplicateKeyError
 
 from app.config import get_settings
-from app.models.user import UserCreate, UserInDB, UserUpdate
+from app.models import OrderInDB
+from app.models.user import UserInDB
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -34,13 +35,13 @@ class MongoDB:
 
             # Test connection
             await self.client.admin.command("ping")
-            logger.info(f"Connected to MongoDB: {settings.mongodb_database}")
+            logger.info("Connected to MongoDB: %s", settings.mongodb_database)
 
             # Create indexes
             await self._create_indexes()
 
         except ConnectionFailure as e:
-            logger.error(f"Failed to connect to MongoDB: {e}")
+            logger.error("Failed to connect to MongoDB: %s", e)
             raise
 
     async def disconnect(self) -> None:
@@ -62,15 +63,15 @@ class MongoDB:
             )
             logger.info("MongoDB indexes created")
 
-    async def create_user(self, user: UserCreate) -> UserInDB:
+    async def create_user(self, user: UserInDB) -> UserInDB:
         """Create a new user."""
         if self.db is None:
             raise ConnectionError("Database not connected")
 
         try:
             user_data = user.model_dump()
-            user_data["createdAt"] = datetime.utcnow()
-            user_data["updatedAt"] = datetime.utcnow()
+            user_data["createdAt"] = datetime.now(UTC)
+            user_data["updatedAt"] = datetime.now(UTC)
 
             result = await self.db[settings.mongodb_user_collection].insert_one(user_data)
 
@@ -110,7 +111,7 @@ class MongoDB:
             return UserInDB(**user_data)
         return None
 
-    async def update_user(self, user_id: str, user_update: UserUpdate) -> Optional[UserInDB]:
+    async def update_user(self, user_id: str, user_update: UserInDB) -> Optional[UserInDB]:
         """Update user information."""
         if not self.db:
             raise ConnectionError("Database not connected")
@@ -119,7 +120,7 @@ class MongoDB:
         if not update_data:
             return await self.get_user(user_id)
 
-        update_data["updatedAt"] = datetime.utcnow()
+        update_data["updatedAt"] = datetime.now(UTC)
 
         result = await self.db[settings.mongodb_user_collection].update_one(
             {"userId": user_id}, {"$set": update_data}
@@ -147,6 +148,59 @@ class MongoDB:
         )
         users = await cursor.to_list(length=limit)
         return [UserInDB(**user) for user in users]
+
+    # ── Purchase Order Methods ─────────────────────────────────────────────────
+
+    async def create_order(self, order: OrderInDB) -> OrderInDB:
+        """Create a new order."""
+        if self.db is None:
+            raise ConnectionError("Database not connected")
+
+        try:
+            order_data = order.model_dump()
+            order_data["createdAt"] = datetime.now(UTC)
+            order_data["updatedAt"] = datetime.now(UTC)
+
+            result = await self.db[settings.mongodb_purchase_orders_collection].insert_one(
+                order_data
+            )
+
+            if result.inserted_id:
+                created_order = await self.get_order(order.orderNumber)
+                if created_order:
+                    return created_order
+
+            raise ValueError("Failed to create order")
+
+        except DuplicateKeyError:
+            raise ValueError(f"Order with orderNumber '{order.orderNumber}' already exists")
+
+    async def get_order(self, order_number: str) -> Optional[OrderInDB]:
+        """Get order by order number."""
+        if self.db is None:
+            raise ConnectionError("Database not connected")
+
+        order_data = await self.db[settings.mongodb_purchase_orders_collection].find_one(
+            {"orderNumber": order_number}, {"_id": 0}
+        )
+
+        if order_data:
+            return OrderInDB(**order_data)
+        return None
+
+    async def get_user_orders(self, user_id: str) -> list[OrderInDB]:
+        """Get all orders for a user, sorted by order date descending."""
+        if self.db is None:
+            raise ConnectionError("Database not connected")
+
+        cursor = (
+            self.db[settings.mongodb_purchase_orders_collection]
+            .find({"userId": user_id}, {"_id": 0})
+            .sort("orderDate", -1)
+        )
+
+        orders_data = await cursor.to_list(length=None)
+        return [OrderInDB(**order) for order in orders_data]
 
 
 # Global MongoDB instance

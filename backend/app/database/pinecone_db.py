@@ -3,18 +3,79 @@
 import logging
 from typing import Any, Optional
 
-from langchain.chains.query_constructor.base import AttributeInfo
-from langchain.retrievers.self_query.base import SelfQueryRetriever
+from langchain_classic.chains.query_constructor.schema import AttributeInfo
+from langchain_classic.chains.query_constructor.ir import Comparison, Operation
+from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
+from langchain_classic.retrievers.self_query.pinecone import PineconeTranslator
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
-from pinecone_text.sparse import BM25Encoder
 
 from app.config import get_settings
 from app.models.product import Product, ProductBase, ProductDocument
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
+
+
+# ── Custom Pinecone Visitor with Type Conversion ──────────────────────────────
+
+class TypeConvertingPineconeTranslator(PineconeTranslator):
+    """Custom Pinecone translator that converts string values to proper types.
+
+    Some LLMs return numeric values as strings (e.g., "300" instead of 300),
+    which causes Pinecone to reject the filter. This visitor ensures that
+    numeric fields get proper numeric values.
+    """
+
+    # Define which fields should be numeric
+    NUMERIC_FIELDS = {"salePrice", "regularPrice", "customerRating"}
+
+    def visit_comparison(self, comparison: Comparison) -> dict:
+        """Override comparison visitor to convert string numbers to floats."""
+        # Convert string numbers to floats for numeric fields
+        if comparison.attribute in self.NUMERIC_FIELDS:
+            if isinstance(comparison.value, str):
+                try:
+                    comparison.value = float(comparison.value)
+                    logger.debug(
+                        "Converted %s value to float: %s",
+                        comparison.attribute,
+                        comparison.value,
+                    )
+                except ValueError:
+                    logger.warning(
+                        "Failed to convert %s value '%s' to float",
+                        comparison.attribute,
+                        comparison.value,
+                    )
+
+        # Call the parent implementation
+        return super().visit_comparison(comparison)
+
+    def visit_operation(self, operation: Operation) -> dict:
+        """Override operation visitor to ensure all nested comparisons are type-converted."""
+        # Process all arguments to ensure type conversion happens recursively
+        for arg in operation.arguments:
+            if isinstance(arg, Comparison) and arg.attribute in self.NUMERIC_FIELDS:
+                if isinstance(arg.value, str):
+                    try:
+                        arg.value = float(arg.value)
+                        logger.debug(
+                            "Converted %s value to float in operation: %s",
+                            arg.attribute,
+                            arg.value,
+                        )
+                    except ValueError:
+                        logger.warning(
+                            "Failed to convert %s value '%s' to float in operation",
+                            arg.attribute,
+                            arg.value,
+                        )
+
+        # Call the parent implementation
+        return super().visit_operation(operation)
+
 
 # ── Static metadata field definitions for SelfQueryingRetriever ───────────────
 # categoryName is omitted here — it is built dynamically in build_sqr()
@@ -58,17 +119,16 @@ _DOCUMENT_CONTENT_DESCRIPTION = (
 
 
 class PineconeDB:
-    """Pinecone vector database manager with hybrid search support."""
+    """Pinecone vector database manager."""
 
     def __init__(self) -> None:
         self.client: Optional[Pinecone] = None
         self.index = None
         self.embeddings: Optional[OllamaEmbeddings] = None
         self.vectorstore: Optional[PineconeVectorStore] = None
-        self.bm25_encoder: Optional[BM25Encoder] = None
 
     async def connect(self) -> None:
-        """Connect to Pinecone and initialise the vectorstore with hybrid search support."""
+        """Connect to Pinecone and initialise the vectorstore."""
         try:
             self.client = Pinecone(api_key=settings.pinecone_api_key)
 
@@ -77,31 +137,25 @@ class PineconeDB:
                 model=settings.ollama_embedding_model,
             )
 
-            # Initialize BM25 encoder for sparse vectors (hybrid search)
-            self.bm25_encoder = BM25Encoder()
-            logger.info("Initialized BM25Encoder for hybrid search")
-
             existing_indexes = [idx.name for idx in self.client.list_indexes()]
 
             if settings.pinecone_index_name in existing_indexes:
                 desc = self.client.describe_index(settings.pinecone_index_name)
                 if desc.dimension != settings.pinecone_dimension:
                     logger.warning(
-                        f"Dimension mismatch — deleting index: {settings.pinecone_index_name}"
+                        "Dimension mismatch — deleting index: %s",
+                        settings.pinecone_index_name,
                     )
                     self.client.delete_index(settings.pinecone_index_name)
                     existing_indexes.remove(settings.pinecone_index_name)
 
             if settings.pinecone_index_name not in existing_indexes:
-                logger.info(f"Creating Pinecone index with hybrid search support: {settings.pinecone_index_name}")
+                logger.info("Creating Pinecone index: %s", settings.pinecone_index_name)
                 self.client.create_index(
                     name=settings.pinecone_index_name,
                     dimension=settings.pinecone_dimension,
                     metric=settings.pinecone_metric,
-                    spec=ServerlessSpec(
-                        cloud="aws",
-                        region="us-east-1"
-                    ),
+                    spec=ServerlessSpec(cloud="aws", region="us-east-1"),
                 )
 
             self.vectorstore = PineconeVectorStore(
@@ -109,17 +163,20 @@ class PineconeDB:
                 embedding=self.embeddings,
                 pinecone_api_key=settings.pinecone_api_key,
                 namespace=settings.pinecone_namespace,
-                sparse_encoder=self.bm25_encoder,  # Enable automatic hybrid search
             )
 
             self.index = self.client.Index(settings.pinecone_index_name)
-            logger.info(f"Connected to Pinecone index with hybrid search: {settings.pinecone_index_name}")
+            logger.info("Connected to Pinecone index: %s", settings.pinecone_index_name)
 
         except Exception as e:
-            logger.error(f"Failed to connect to Pinecone: {e}")
+            logger.error("Failed to connect to Pinecone: %s", e)
             raise
 
     async def disconnect(self) -> None:
+        """Release Pinecone resources (no persistent connection to close)."""
+        self.client = None
+        self.index = None
+        self.vectorstore = None
         logger.info("Pinecone connection closed")
 
     # ── Self-Querying Retriever factory ────────────────────────────────────────
@@ -164,175 +221,43 @@ class PineconeDB:
 
         metadata_field_info = _STATIC_METADATA_FIELDS + [category_field]
 
+        # Use custom translator that converts string numbers to proper types
         retriever = SelfQueryRetriever.from_llm(
             llm=llm,
             vectorstore=self.vectorstore,
             document_contents=_DOCUMENT_CONTENT_DESCRIPTION,
             metadata_field_info=metadata_field_info,
             search_kwargs={"k": settings.vector_search_top_k},
+            structured_query_translator=TypeConvertingPineconeTranslator(),
             # When SQR cannot parse a filter it falls back to unfiltered search
             enable_limit=False,
             verbose=True,
         )
 
         logger.info(
-            f"SelfQueryingRetriever built — "
-            f"{len(metadata_field_info)} metadata fields, "
-            f"{len(categories)} categories."
+            "SelfQueryingRetriever built — %d metadata fields, %d categories.",
+            len(metadata_field_info),
+            len(categories),
         )
         return retriever
 
     # ── Product ingestion ──────────────────────────────────────────────────────
 
-    def fit_bm25_encoder(self, texts: list[str]) -> None:
-        """Fit the BM25 encoder on a corpus of texts.
-
-        This calculates IDF (Inverse Document Frequency) weights based on the
-        provided corpus, enabling domain-specific keyword matching.
-
-        Args:
-            texts: List of text documents to train on (typically all product descriptions)
-
-        Note:
-            - Should be called ONCE on the full product corpus before adding products
-            - Alternative: Use BM25Encoder.default() for generic pre-trained weights
-            - Custom fitting provides better results for domain-specific data
-        """
-        if not self.bm25_encoder:
-            logger.warning("BM25Encoder not initialized, skipping fit")
-            return
-
-        if hasattr(self.bm25_encoder, 'idf_'):
-            logger.info("BM25Encoder already fitted, skipping")
-            return
-
-        logger.info(f"Fitting BM25Encoder on {len(texts)} documents...")
-        self.bm25_encoder.fit(texts)
-        logger.info("BM25Encoder fitted successfully with domain-specific IDF weights")
-
     async def add_products(self, products: list[ProductBase]) -> None:
-        """Embed and upsert products into Pinecone with hybrid search support.
-
-        Since sparse_encoder is set on the vectorstore, it automatically generates
-        both dense (semantic) and sparse (BM25) vectors during upsert.
-
-        Note:
-            BM25 encoder must be fitted before calling this method. You can either:
-            1. Call fit_bm25_encoder() explicitly with the full corpus
-            2. Let this method auto-fit on the current batch (not ideal for multiple batches)
-        """
-        if not self.vectorstore or not self.index:
+        """Embed and upsert products into Pinecone."""
+        if not self.vectorstore:
             raise ConnectionError("Vectorstore not initialised.")
-
         try:
             documents = [ProductDocument.from_product(p) for p in products]
-            texts = [d.text for d in documents]
-            metadatas = [d.metadata for d in documents]
-            ids = [d.product_id for d in documents]
-
-            # Auto-fit BM25 encoder if not already fitted (convenience fallback)
-            # For best results, call fit_bm25_encoder() explicitly on the full corpus
-            if self.bm25_encoder and not hasattr(self.bm25_encoder, 'idf_'):
-                logger.warning(
-                    "BM25Encoder not fitted yet - auto-fitting on current batch. "
-                    "For optimal results, call fit_bm25_encoder() on the full corpus first."
-                )
-                self.fit_bm25_encoder(texts)
-
-            # Use vectorstore.add_texts() which automatically handles hybrid search
-            # when sparse_encoder is configured
-            await self.vectorstore.aadd_texts(
-                texts=texts,
-                metadatas=metadatas,
-                ids=ids,
+            self.vectorstore.add_texts(
+                texts=[d.text for d in documents],
+                metadatas=[d.metadata for d in documents],
+                ids=[d.product_id for d in documents],
             )
-
-            logger.info(f"Added {len(products)} products to Pinecone with hybrid search vectors")
-
+            logger.info("Added %d products to Pinecone", len(products))
         except Exception as e:
-            logger.error(f"Failed to add products to Pinecone: {e}")
+            logger.error("Failed to add products to Pinecone: %s", e)
             raise
-
-    async def hybrid_search(
-        self,
-        query: str,
-        filter: Optional[dict] = None,
-        top_k: int = 5,
-        alpha: Optional[float] = None,
-    ) -> list[dict]:
-        """Perform hybrid search combining dense and sparse vectors.
-
-        Args:
-            query: Search query text
-            filter: Pinecone metadata filter
-            top_k: Number of results to return
-            alpha: Weight for dense vs sparse (0.0=sparse only, 1.0=dense only)
-                   If None, uses settings.hybrid_search_alpha
-
-        Returns:
-            List of search results with metadata
-        """
-        if not self.index or not self.embeddings:
-            raise ConnectionError("Index not initialised.")
-
-        try:
-            # Use configured alpha if not provided
-            if alpha is None:
-                alpha = settings.hybrid_search_alpha
-
-            # Generate dense vector (semantic embedding)
-            dense_vector = await self.embeddings.aembed_query(query)
-
-            # Generate sparse vector (BM25/keyword)
-            sparse_vector = None
-            if self.bm25_encoder:
-                sparse_dict = self.bm25_encoder.encode_queries([query])[0]
-                sparse_vector = {
-                    "indices": sparse_dict["indices"],
-                    "values": sparse_dict["values"]
-                }
-
-            # Perform hybrid search
-            search_kwargs = {
-                "namespace": settings.pinecone_namespace,
-                "top_k": top_k,
-                "include_metadata": True,
-            }
-
-            # Add filter if provided
-            if filter:
-                search_kwargs["filter"] = filter
-
-            # Query with both dense and sparse vectors
-            if sparse_vector:
-                results = self.index.query(
-                    vector=dense_vector,
-                    sparse_vector=sparse_vector,
-                    **search_kwargs
-                )
-                logger.info(f"Hybrid search returned {len(results.matches)} results (alpha={alpha})")
-            else:
-                # Fallback to dense-only if sparse not available
-                results = self.index.query(
-                    vector=dense_vector,
-                    **search_kwargs
-                )
-                logger.info(f"Dense-only search returned {len(results.matches)} results")
-
-            # Convert results to list of dicts
-            matches = []
-            for match in results.matches:
-                matches.append({
-                    "id": match.id,
-                    "score": match.score,
-                    "metadata": match.metadata or {},
-                })
-
-            return matches
-
-        except Exception as e:
-            logger.error(f"Hybrid search failed: {e}")
-            return []
 
     # ── Point lookup ───────────────────────────────────────────────────────────
 
@@ -346,7 +271,7 @@ class PineconeDB:
             )
             vectors = fetch_response.vectors
             if product_id not in vectors:
-                logger.info(f"Product '{product_id}' not found in Pinecone")
+                logger.info("Product '%s' not found in Pinecone", product_id)
                 return None
 
             meta = vectors[product_id].metadata or {}
@@ -361,34 +286,38 @@ class PineconeDB:
                 categoryName=meta.get("categoryName", ""),
                 isOnSale=bool(meta.get("isOnSale", False)),
                 highResImage=meta.get("highResImage") or None,
+                relevance_score=None,
             )
         except Exception as e:
-            logger.error(f"Failed to fetch product by ID: {e}")
+            logger.error("Failed to fetch product by ID: %s", e)
             return None
 
     # ── Admin helpers ──────────────────────────────────────────────────────────
 
     async def delete_products(self, product_ids: list[str]) -> None:
+        """Delete specific products from the Pinecone index by their IDs."""
         if not self.index:
             raise ConnectionError("Index not initialised.")
         try:
             self.index.delete(ids=product_ids, namespace=settings.pinecone_namespace)
-            logger.info(f"Deleted {len(product_ids)} products from Pinecone")
+            logger.info("Deleted %d products from Pinecone", len(product_ids))
         except Exception as e:
-            logger.error(f"Failed to delete products: {e}")
+            logger.error("Failed to delete products: %s", e)
             raise
 
     async def clear_index(self) -> None:
+        """Delete all vectors from the configured namespace."""
         if not self.index:
             raise ConnectionError("Index not initialised.")
         try:
             self.index.delete(delete_all=True, namespace=settings.pinecone_namespace)
             logger.info("Cleared all products from Pinecone index")
         except Exception as e:
-            logger.error(f"Failed to clear index: {e}")
+            logger.error("Failed to clear index: %s", e)
             raise
 
     async def get_stats(self) -> dict[str, Any]:
+        """Return index statistics (total vectors, dimension, namespaces)."""
         if not self.index:
             raise ConnectionError("Index not initialised.")
         try:
@@ -399,7 +328,7 @@ class PineconeDB:
                 "namespaces": stats.get("namespaces", {}),
             }
         except Exception as e:
-            logger.error(f"Failed to get index stats: {e}")
+            logger.error("Failed to get index stats: %s", e)
             return {}
 
 

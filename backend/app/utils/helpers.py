@@ -2,7 +2,7 @@
 
 import hashlib
 import uuid
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 
 
@@ -17,8 +17,8 @@ def generate_hash(text: str) -> str:
 
 
 def get_timestamp() -> str:
-    """Get current timestamp in ISO format."""
-    return datetime.utcnow().isoformat()
+    """Get current UTC timestamp in ISO format."""
+    return datetime.now(UTC).isoformat()
 
 
 def safe_dict_get(d: dict[str, Any], key: str, default: Any = None) -> Any:

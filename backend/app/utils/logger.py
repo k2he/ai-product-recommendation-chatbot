@@ -45,4 +45,4 @@ def setup_logging() -> None:
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
 
-    logger.info(f"Logging configured: level={settings.log_level}, format={settings.log_format}")
+    logger.info("Logging configured: level=%s, format=%s", settings.log_level, settings.log_format)

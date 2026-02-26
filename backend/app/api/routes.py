@@ -2,7 +2,6 @@
 
 import logging
 import uuid
-from typing import Any
 
 from fastapi import APIRouter, Header, HTTPException, status
 
@@ -14,12 +13,10 @@ from app.models.request import (
     ActionResponse,
     ChatRequest,
     ChatResponse,
-    ErrorResponse,
     HealthResponse,
 )
-from app.models.user import UserCreate, UserResponse
+from app.services import user_service
 from app.services.chatbot_service import chatbot_service
-from app.services.user_service import user_service
 
 logger = logging.getLogger(__name__)
 settings = get_settings()
@@ -47,39 +44,11 @@ async def health_check() -> HealthResponse:
             },
         )
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
+        logger.error("Health check failed: %s", e)
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Service unhealthy",
         )
-
-
-@router.post("/users", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
-async def create_user(user: UserCreate) -> UserResponse:
-    """Create a new user."""
-    try:
-        created_user = await user_service.create_user(user)
-        return UserResponse(**created_user.model_dump())
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error creating user: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to create user",
-        )
-
-
-@router.get("/users/{user_id}", response_model=UserResponse)
-async def get_user(user_id: str) -> UserResponse:
-    """Get user by ID."""
-    user = await user_service.get_user(user_id)
-    if not user:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"User not found: {user_id}",
-        )
-    return UserResponse(**user.model_dump())
 
 
 @router.post("/chat", response_model=ChatResponse)
@@ -89,10 +58,10 @@ async def chat(
 ) -> ChatResponse:
     """Main chat endpoint for product recommendations.
 
-    The workflow now has three phases:
+    The workflow has three phases:
     1. Intent detection — LLM determines if the user wants to search, email, or purchase.
     2. If 'email'/'purchase' and last_product_ids are provided, executes the action directly.
-    3. Otherwise, rephrases the query (with metadata filter extraction) and searches Pinecone.
+    3. Otherwise, runs SelfQueryingRetriever to search Pinecone with auto-extracted filters.
 
     Headers:
         X-User-ID: User identifier
@@ -112,15 +81,15 @@ async def chat(
 
         conversation_id = request.conversation_id or str(uuid.uuid4())
 
-        result = await chatbot_service.execute_query(
+        result = await chatbot_service.process_chat_interaction(
             user_query=request.query,
-            user_id=user_id,
+            user_info=user,
             conversation_id=conversation_id,
             last_product_ids=request.last_product_ids,
         )
 
         if result.get("error"):
-            logger.warning(f"Workflow error: {result['error']}")
+            logger.warning("Workflow error: %s", result["error"])
 
         return ChatResponse(
             message=result["message"],
@@ -128,12 +97,14 @@ async def chat(
             conversation_id=result["conversation_id"],
             has_results=result["has_results"],
             source=result["source"],
+            user_info=result.get("user_info"),
+            purchase_history=result.get("purchase_history", []),
         )
 
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Chat error: {e}")
+        logger.error("Chat error: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to process chat request",
@@ -170,11 +141,11 @@ async def execute_action(
         result = await chatbot_service.execute_action(
             action=request.action,
             product_id=request.product_id,
-            user_id=user_id,
+            user_info=user,
         )
 
         if not result["success"]:
-            logger.warning(f"Action failed: {result.get('error', 'Unknown error')}")
+            logger.warning("Action failed: %s", result.get("error", "Unknown error"))
 
         return ActionResponse(
             success=result["success"],
@@ -187,7 +158,7 @@ async def execute_action(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Action error: {e}")
+        logger.error("Action error: %s", e)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Failed to execute action",

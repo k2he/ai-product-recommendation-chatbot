@@ -28,7 +28,7 @@ class DataLoader:
         if not file_path.exists():
             raise FileNotFoundError(f"File not found: {file_path}")
 
-        if not file_path.suffix.lower() == ".json":
+        if file_path.suffix.lower() != ".json":
             raise ValueError(f"File must be a JSON file: {file_path}")
 
         try:
@@ -43,14 +43,14 @@ class DataLoader:
             elif not isinstance(data, list):
                 raise ValueError("JSON must contain a 'products' array, an object, or an array")
 
-            logger.info(f"Loaded {len(data)} records from {file_path}")
+            logger.info("Loaded %d records from %s", len(data), file_path)
             return data
 
         except json.JSONDecodeError as e:
-            logger.error(f"Invalid JSON in file {file_path}: {e}")
+            logger.error("Invalid JSON in file %s: %s", file_path, e)
             raise
         except Exception as e:
-            logger.error(f"Error loading file {file_path}: {e}")
+            logger.error("Error loading file %s: %s", file_path, e)
             raise
 
     @staticmethod
@@ -94,11 +94,11 @@ class DataLoader:
         if not directory_path.is_dir():
             raise ValueError(f"Path is not a directory: {directory_path}")
 
-        all_data = []
+        all_data: list[dict[str, Any]] = []
         json_files = list(directory_path.glob("*.json"))
 
         if not json_files:
-            logger.warning(f"No JSON files found in {directory_path}")
+            logger.warning("No JSON files found in %s", directory_path)
             return all_data
 
         for json_file in json_files:
@@ -106,17 +106,17 @@ class DataLoader:
                 data = DataLoader.load_json_file(json_file)
                 all_data.extend(data)
             except Exception as e:
-                logger.error(f"Skipping file {json_file}: {e}")
+                logger.error("Skipping file %s: %s", json_file, e)
                 continue
 
-        logger.info(f"Loaded {len(all_data)} total records from {len(json_files)} files")
+        logger.info("Loaded %d total records from %d files", len(all_data), len(json_files))
         return all_data
 
     @staticmethod
     def validate_and_parse_products(data: list[dict[str, Any]]) -> list[ProductBase]:
         """Validate and parse raw BestBuy data into ProductBase models."""
-        products = []
-        errors = []
+        products: list[ProductBase] = []
+        errors: list[str] = []
 
         for idx, item in enumerate(data):
             try:
@@ -124,32 +124,30 @@ class DataLoader:
                 product = ProductBase(**transformed)
                 products.append(product)
             except Exception as e:
-                errors.append(f"Record {idx}: {str(e)}")
-                logger.warning(f"Invalid product data at index {idx}: {e}")
+                errors.append(f"Record {idx}: {e}")
+                logger.warning("Invalid product data at index %d: %s", idx, e)
 
         if errors:
-            logger.warning(f"Failed to parse {len(errors)} out of {len(data)} records")
+            logger.warning("Failed to parse %d out of %d records", len(errors), len(data))
 
-        logger.info(f"Successfully validated {len(products)} products")
+        logger.info("Successfully validated %d products", len(products))
         return products
 
     @staticmethod
     def extract_unique_categories(products: list[ProductBase]) -> list[str]:
         """Extract sorted list of unique categoryName values from products."""
         categories = sorted({p.categoryName for p in products if p.categoryName})
-        logger.info(f"Found {len(categories)} unique categories")
+        logger.info("Found %d unique categories", len(categories))
         return categories
 
     @staticmethod
     async def load_products_from_directory(directory_path: str | Path) -> list[ProductBase]:
         """Load and validate products from directory."""
         raw_data = DataLoader.load_directory(directory_path)
-        products = DataLoader.validate_and_parse_products(raw_data)
-        return products
+        return DataLoader.validate_and_parse_products(raw_data)
 
     @staticmethod
     async def load_products_from_file(file_path: str | Path) -> list[ProductBase]:
         """Load and validate products from a single file."""
         raw_data = DataLoader.load_json_file(file_path)
-        products = DataLoader.validate_and_parse_products(raw_data)
-        return products
+        return DataLoader.validate_and_parse_products(raw_data)

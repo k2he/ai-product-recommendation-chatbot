@@ -27,24 +27,28 @@ class Product(ProductBase):
         None, ge=0, le=1, description="Similarity score from vector search"
     )
 
-    class Config:
-        """Pydantic config."""
-
-        json_schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "sku": "18470962",
                 "name": "Apple AirPods 4 In-Ear True Wireless Earbuds with USB-C Charging Case",
-                "shortDescription": "Apple AirPods 4 is rebuilt for exceptional comfort and audio performance.",
+                "shortDescription": (
+                    "Apple AirPods 4 is rebuilt for exceptional comfort and audio performance."
+                ),
                 "customerRating": 4.0,
                 "productUrl": "https://www.bestbuy.ca/en-ca/product/apple-airpods-4/18470962",
                 "regularPrice": 179.99,
                 "salePrice": 149.99,
                 "categoryName": "Wireless Earbuds & Earphones",
                 "isOnSale": True,
-                "highResImage": "https://multimedia.bbycastatic.ca/multimedia/products/1500x1500/184/18470/18470962.jpg",
+                "highResImage": (
+                    "https://multimedia.bbycastatic.ca/multimedia/products/"
+                    "1500x1500/184/18470/18470962.jpg"
+                ),
                 "relevance_score": 0.95,
             }
         }
+    }
 
 
 class ProductDocument(BaseModel):

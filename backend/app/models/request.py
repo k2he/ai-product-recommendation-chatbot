@@ -8,20 +8,20 @@ from pydantic import BaseModel, Field
 from app.models.product import Product
 
 
-
 class IntentType(str, Enum):
     """Valid intent types for intent classification."""
 
     SEARCH = "search"
     EMAIL = "email"
     PURCHASE = "purchase"
+    GENERAL_CHAT = "general_chat"
 
 
 class IntentResponse(BaseModel):
     """Structured output model for intent classification."""
 
     intent: IntentType = Field(
-        description="The classified intent: 'search', 'email', or 'purchase'"
+        description="The classified intent: 'search', 'email', 'purchase', or 'general_chat'"
     )
     product_hint: Optional[str] = Field(
         default=None,
@@ -40,16 +40,15 @@ class ChatRequest(BaseModel):
                     "Used for intent detection (email/purchase) without repeating search.",
     )
 
-    class Config:
-        """Pydantic config."""
-
-        json_schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "query": "I need wireless headphones with good battery life",
                 "conversation_id": "conv_123",
                 "last_product_ids": [],
             }
         }
+    }
 
 
 class ActionRequest(BaseModel):
@@ -59,16 +58,15 @@ class ActionRequest(BaseModel):
     product_id: str = Field(..., description="Product SKU for the action")
     conversation_id: Optional[str] = Field(None, description="Conversation ID")
 
-    class Config:
-        """Pydantic config."""
-
-        json_schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "action": "email",
                 "product_id": "18470962",
                 "conversation_id": "conv_123",
             }
         }
+    }
 
 
 class ChatResponse(BaseModel):
@@ -80,13 +78,11 @@ class ChatResponse(BaseModel):
     has_results: bool = Field(..., description="Whether products were found")
     source: str = Field(
         ...,
-        description="Source of results: 'vector_db', 'web_search', 'action', or 'none'",
+        description="Source of results: 'vector_db' (products from database), 'action' (email/purchase), 'general_chat' (conversation), 'general_chat_with_search' (conversation with search tool), or 'none' (no results)",
     )
 
-    class Config:
-        """Pydantic config."""
-
-        json_schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "message": "I found 3 wireless headphones that match your requirements...",
                 "products": [
@@ -108,6 +104,7 @@ class ChatResponse(BaseModel):
                 "source": "vector_db",
             }
         }
+    }
 
 
 class ActionResponse(BaseModel):
@@ -119,10 +116,8 @@ class ActionResponse(BaseModel):
     product_id: str = Field(..., description="Product SKU that was acted on")
     details: Optional[dict[str, Any]] = Field(None, description="Additional action details")
 
-    class Config:
-        """Pydantic config."""
-
-        json_schema_extra = {
+    model_config = {
+        "json_schema_extra": {
             "example": {
                 "success": True,
                 "message": "Product details sent to user@example.com",
@@ -131,6 +126,7 @@ class ActionResponse(BaseModel):
                 "details": {"email": "user@example.com"},
             }
         }
+    }
 
 
 class ErrorResponse(BaseModel):

@@ -11,3 +11,5 @@
 /frontend/node_modules
 .DS_Store
 .DS_Store
+/.idea
+/backend/app/tools/__pycache__

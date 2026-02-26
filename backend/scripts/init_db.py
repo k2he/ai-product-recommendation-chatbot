@@ -1,47 +1,45 @@
-"""Database initialization script."""
+"""Database initialization script.
+
+Creates MongoDB indexes and seeds sample users for development.
+"""
 
 import asyncio
 import logging
 
 from app.database.mongodb import mongodb
-from app.database.pinecone_db import pinecone_db
-from app.models.user import UserCreate
+from app.models.user import UserInDB
 from app.services.user_service import user_service
 from app.utils.logger import setup_logging
 
-# Setup logging
 setup_logging()
 logger = logging.getLogger(__name__)
 
 
-async def init_databases():
+async def init_databases() -> None:
     """Initialize databases and create sample users."""
     try:
         logger.info("Initializing databases...")
 
-        # Connect to databases
         await mongodb.connect()
-        # await pinecone_db.connect()
-
-        logger.info("Databases connected successfully")
+        logger.info("Database connected successfully")
 
         # Create sample users
         sample_users = [
-            UserCreate(
+            UserInDB(
                 userId="user_001",
                 firstName="Kai",
                 lastName="He",
                 email="kai.he@example.com",
                 phone="+1234567890",
             ),
-            UserCreate(
+            UserInDB(
                 userId="user_002",
                 firstName="Jane",
                 lastName="Smith",
                 email="jane.smith@example.com",
                 phone="+1234567891",
             ),
-            UserCreate(
+            UserInDB(
                 userId="user_003",
                 firstName="Bob",
                 lastName="Johnson",
@@ -53,19 +51,18 @@ async def init_databases():
         for user in sample_users:
             try:
                 await user_service.create_user(user)
-                logger.info(f"Created user: {user.userId}")
+                logger.info("Created user: %s", user.userId)
             except ValueError as e:
-                logger.warning(f"User {user.userId} already exists: {e}")
+                logger.warning("User %s already exists: %s", user.userId, e)
 
         logger.info("Database initialization completed successfully")
 
     except Exception as e:
-        logger.error(f"Error initializing databases: {e}")
+        logger.error("Error initializing databases: %s", e)
         raise
 
     finally:
         await mongodb.disconnect()
-        # await pinecone_db.disconnect()
 
 
 if __name__ == "__main__":

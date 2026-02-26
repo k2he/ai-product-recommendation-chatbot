@@ -11,18 +11,26 @@ from app.models.request import (
     IntentResponse,
     IntentType,
 )
-from app.models.user import UserCreate, UserInDB, UserResponse, UserUpdate
+from app.models.user import UserInDB
+from app.models.order import OrderInDB, LineItem
+from app.models.state import AgentState
+
+# Rebuild AgentState after all forward-referenced models are imported
+# This resolves the Pydantic forward reference issue
+AgentState.model_rebuild()
 
 __all__ = [
     # User models
-    "UserCreate",
-    "UserUpdate",
     "UserInDB",
-    "UserResponse",
     # Product models
     "Product",
     "ProductBase",
     "ProductDocument",
+    # Agent state model
+    "AgentState",
+    # Order models
+    "OrderInDB",
+    "LineItem",
     # Request/Response models
     "ChatRequest",
     "ChatResponse",

@@ -62,7 +62,7 @@ const ChatInterface = () => {
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-2xl font-bold text-gray-900">
-                Product Recommendation Assistant
+                Product Recommendation Assistant - Bestbuy
               </h1>
               <p className="text-sm text-gray-600 mt-1">
                 Powered by AI • Find your perfect product
