@@ -45,14 +45,6 @@ const UserInfoCard = ({ userInfo, messageContent }) => {
   return (
     <div className="bg-white rounded-xl shadow-md overflow-hidden hover:shadow-lg transition-shadow duration-200 flex flex-col max-w-xs">
 
-      {/* ── Avatar header — mirrors the product image area ─────────────── */}
-      <div className="w-full h-32 bg-gradient-to-br from-blue-50 to-blue-100 flex items-center justify-center gap-4">
-        {/* Avatar circle */}
-        <div className="w-16 h-16 rounded-full bg-blue-600 flex items-center justify-center text-white text-2xl font-bold shadow-md flex-shrink-0">
-          {initial}
-        </div>
-      </div>
-
       {/* ── Card body ──────────────────────────────────────────────────── */}
       <div className="p-4 flex flex-col flex-1">
 
