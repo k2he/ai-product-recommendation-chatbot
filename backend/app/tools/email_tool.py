@@ -1,12 +1,15 @@
-"""Email product tool for the chatbot agent."""
+"""Email product tool for the chatbot agent.
+
+No longer mutates external AgentState — returns a text result and
+the post-processing node determines source='action'.
+"""
 
 import logging
 from typing import Any, Callable, Optional
 
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 
 from app.models.product import Product
-from app.models.state import AgentState
 
 logger = logging.getLogger(__name__)
 
@@ -14,16 +17,14 @@ logger = logging.getLogger(__name__)
 def create_email_tool(
     email_service: Any,
     get_product_by_id: Callable,
-    state: AgentState,
     user_name: str,
     user_email: str,
-) -> Callable:
+) -> BaseTool:
     """Create a send_product_email tool with injected dependencies.
 
     Args:
         email_service: Email service instance for sending emails
         get_product_by_id: Async function to fetch product by SKU
-        state: Shared AgentState for tracking action results
         user_name: User's first name for personalization
         user_email: User's email address to send to
 
@@ -63,9 +64,6 @@ def create_email_tool(
                 recipient_name=user_name,
                 product=product,
             )
-
-            # Update state for API response (source indicates an action was taken)
-            state.source = "action"
 
             logger.info("Email sent successfully for product %s to %s", product_id, user_email)
             return (

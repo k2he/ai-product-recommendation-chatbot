@@ -58,10 +58,10 @@ async def chat(
 ) -> ChatResponse:
     """Main chat endpoint for product recommendations.
 
-    The workflow has three phases:
-    1. Intent detection — LLM determines if the user wants to search, email, or purchase.
-    2. If 'email'/'purchase' and last_product_ids are provided, executes the action directly.
-    3. Otherwise, runs SelfQueryingRetriever to search Pinecone with auto-extracted filters.
+    Runs the LangGraph chatbot workflow. The agent LLM decides which tools to call
+    (product search, email, purchase, web search, user info, purchase history, etc.)
+    based on the user's message. No explicit intent detection step — the agent handles
+    routing automatically via tool selection.
 
     Headers:
         X-User-ID: User identifier
@@ -69,7 +69,8 @@ async def chat(
     Body:
         query: User's product search query
         conversation_id: Optional conversation ID
-        last_product_ids: SKUs from the most recent assistant response (for action detection)
+        last_product_ids: SKUs from the most recent assistant response (kept for API
+                          compatibility; context is now carried in the message history)
     """
     try:
         user = await user_service.get_user(user_id)
@@ -97,8 +98,6 @@ async def chat(
             conversation_id=result["conversation_id"],
             has_results=result["has_results"],
             source=result["source"],
-            user_info=result.get("user_info"),
-            purchase_history=result.get("purchase_history", []),
         )
 
     except HTTPException:

@@ -1,14 +1,16 @@
-"""LangChain-based chatbot workflow using Tool-Calling Agent.
+"""LangGraph-based chatbot service — orchestrates requests through the agent graph.
 
-Architecture:
-  Single Agent with 4 Tools:
-    1. search_products  — Search product catalog via SelfQueryingRetriever
-    2. send_product_email — Email product details to user
-    3. purchase_product — Place an order for a product
-    4. search_web — Search the web for factual questions (via Tavily)
+Responsibilities:
+  1. LLM initialisation (ChatOllama)
+  2. SelfQueryingRetriever lazy init and product retrieval (_get_or_build_sqr)
+  3. Build per-request tools with injected user context (_build_tools)
+  4. Build the system prompt (_build_system_prompt)
+  5. Delegate graph compilation to app.graph.builder.build_chatbot_graph
+  6. Run graph.ainvoke() and format the API response (process_chat_interaction)
+  7. Execute direct email / purchase actions for the /actions endpoint (execute_action)
 
-  The LLM decides which tool(s) to call based on the user's message.
-  No explicit intent classification - the agent handles routing directly.
+Graph structure (defined in app/graph/builder.py):
+  __start__ → agent → (should_continue?) → tools ↻ agent → process_results → __end__
 """
 
 import json
@@ -16,14 +18,16 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
 from langchain_ollama import ChatOllama
-from langchain.agents import create_agent
 
 from app.config import get_settings
 from app.database.mongodb import mongodb
 from app.database.pinecone_db import pinecone_db
-from app.models import UserInDB, AgentState
+from app.graph.builder import build_chatbot_graph
+from app.graph.state import AgentState
+from app.models import UserInDB
 from app.models.product import Product
 from app.models.request import IntentType
 from app.services.email_service import email_service
@@ -42,7 +46,7 @@ settings = get_settings()
 
 
 class ChatbotService:
-    """LangChain-based chatbot service using Tool-Calling Agent."""
+    """LangGraph-based chatbot service using explicit StateGraph."""
 
     def __init__(self) -> None:
         """Initialize the chatbot service.
@@ -149,7 +153,6 @@ class ChatbotService:
 
     def _build_tools(
         self,
-        state: AgentState,
         user_name: str,
         user_email: str,
         user_id: str,
@@ -157,8 +160,11 @@ class ChatbotService:
     ) -> list:
         """Build the tools list with injected context.
 
+        Tools no longer receive an AgentState parameter — they return text
+        and the post-processing node extracts structured data from the
+        message history.
+
         Args:
-            state: Shared AgentState for tools to store results
             user_name: User's first name
             user_email: User's email address
             user_id: User's ID
@@ -169,10 +175,9 @@ class ChatbotService:
         """
         tools = []
 
-        # Tool 1: Search products
+        # Tool 1: Search products (SQR runs inside this tool)
         search_tool = create_search_products_tool(
             run_sqr=self._run_sqr,
-            state=state,
         )
         tools.append(search_tool)
 
@@ -180,7 +185,6 @@ class ChatbotService:
         email_tool = create_email_tool(
             email_service=email_service,
             get_product_by_id=pinecone_db.get_product_by_id,
-            state=state,
             user_name=user_name,
             user_email=user_email,
         )
@@ -189,7 +193,6 @@ class ChatbotService:
         # Tool 3: Purchase product
         purchase_tool = create_purchase_tool(
             get_product_by_id=pinecone_db.get_product_by_id,
-            state=state,
             user_name=user_name,
             user_email=user_email,
             user_id=user_id,
@@ -198,14 +201,12 @@ class ChatbotService:
 
         # Tool 4: Get user information
         user_info_tool = create_user_info_tool(
-            state=state,
             user_info=user_info,
         )
         tools.append(user_info_tool)
 
         # Tool 5: Get purchase history
         purchase_history_tool = create_purchase_history_tool(
-            state=state,
             user_id=user_id,
         )
         tools.append(purchase_history_tool)
@@ -216,33 +217,20 @@ class ChatbotService:
 
         return tools
 
-    def _build_system_prompt(
-        self,
-        user_name: str,
-        last_product_ids: list[str],
-        last_product_names: str,
-    ) -> str:
+    def _build_system_prompt(self, user_name: str) -> str:
         """Build the system prompt for the agent.
+
+        Context from previous turns is carried in the LangGraph message history,
+        so we no longer need last_product_ids or last_product_names in the prompt.
 
         Args:
             user_name: User's first name
-            last_product_ids: Product SKUs from previous response
-            last_product_names: Formatted string of product names
 
         Returns:
             System prompt string
         """
-        context_section = ""
-        if last_product_ids:
-            context_section = f"""
-CONVERSATION CONTEXT:
-Previously shown products: {last_product_names}
-Product SKUs for reference: {', '.join(last_product_ids[:3])}
-If the user refers to "it", "that", or "the product", use the first SKU: {last_product_ids[0]}
-"""
-
         return f"""You are a friendly e-commerce shopping assistant chatting with {user_name}.
-{context_section}
+
 BEHAVIOR GUIDELINES:
 • Be warm, conversational, and helpful
 • For greetings or small talk, respond naturally WITHOUT mentioning email or purchase options
@@ -251,56 +239,31 @@ BEHAVIOR GUIDELINES:
 • Keep responses concise (3-5 sentences)
 
 CONTEXT HANDLING:
-• When the user says "it", "that", or "the product" without specifying, use the first product SKU from context above
-• For email/purchase actions, you MUST provide a valid product SKU from search results or conversation context"""
+• When the user says "it", "that", or "the product" without specifying, refer to the conversation history for the most recently discussed product
+• For email/purchase actions, you MUST provide a valid product SKU from search results or conversation history"""
 
-    async def _resolve_product_names(self, product_ids: list[str]) -> str:
-        """Resolve product IDs to names for context."""
-        if not product_ids:
-            return "none"
+    # ── LangGraph Construction ─────────────────────────────────────────────────
 
-        names = []
-        for pid in product_ids[:3]:
-            product = await pinecone_db.get_product_by_id(pid)
-            if product:
-                names.append(f"{product.name} (SKU: {pid})")
+    def _build_graph(self, tools: list):
+        """Build and compile the LangGraph StateGraph.
 
-        return ", ".join(names) if names else "none"
+        Delegates to ``app.graph.builder.build_chatbot_graph`` which owns
+        the node/edge wiring.  The graph is compiled per-request because
+        tools capture user-specific context (name, email, id).
+        See ``graph/builder.py`` for the C1 trade-off note.
 
-    def _extract_response_from_agent(self, result: dict) -> str:
-        """Extract the final response text from agent result."""
-        messages = result.get("messages", [])
-        if messages:
-            last_msg = messages[-1]
-            if hasattr(last_msg, 'content'):
-                return last_msg.content
-            return str(last_msg)
-        return "I apologize, but I couldn't generate a response."
+        Args:
+            tools: List of LangChain BaseTool instances.
 
-    def _determine_source(self, result: dict, state: AgentState) -> str:
-        """Determine the source based on agent execution and state."""
-        # If state has explicit source from tools, use it
-        if state.source:
-            return state.source
-
-        # Check if any tool was called
-        messages = result.get("messages", [])
-        tool_used = any(
-            hasattr(msg, 'tool_calls') and msg.tool_calls
-            for msg in messages
-            if hasattr(msg, 'tool_calls')
+        Returns:
+            Compiled LangGraph graph.
+        """
+        llm_with_tools = self.llm.bind_tools(tools)
+        return build_chatbot_graph(
+            llm_with_tools=llm_with_tools,
+            tools=tools,
+            run_sqr=self._run_sqr,
         )
-
-        if tool_used:
-            # Check for web search specifically
-            for msg in messages:
-                if hasattr(msg, 'tool_calls') and msg.tool_calls:
-                    for tc in msg.tool_calls:
-                        if tc.get("name") == "search_web":
-                            return "general_chat_with_search"
-            return "vector_db"  # Default for other tools
-
-        return "general_chat"
 
     # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -311,19 +274,20 @@ CONTEXT HANDLING:
         conversation_id: str,
         last_product_ids: list[str],
     ) -> dict:
-        """Execute the chatbot workflow using a tool-calling agent.
+        """Execute the chatbot workflow using a LangGraph StateGraph.
 
         Args:
             user_query: User's query message
             user_info: User information (required, must be pre-fetched by caller)
             conversation_id: Conversation identifier
             last_product_ids: Product SKUs from previous assistant response
+                              (kept for API compatibility; context is now in message history)
 
         Returns:
             Response dict with message, products, and metadata
         """
         try:
-            logger.info("Starting agent workflow for query: '%s'", user_query)
+            logger.info("Starting LangGraph workflow for query: '%s'", user_query)
 
             # Validate user info
             if not user_info:
@@ -336,49 +300,45 @@ CONTEXT HANDLING:
             user_email = str(user_info.email)
             user_id = user_info.userId
 
-            # Resolve product names for context
-            last_product_ids = last_product_ids or []
-            last_product_names = await self._resolve_product_names(last_product_ids)
-
-            # Create shared state for tools to populate
-            state = AgentState()
-
-            # Build tools with injected context
+            # Build tools with injected context (no state parameter)
             tools = self._build_tools(
-                state=state,
                 user_name=user_name,
                 user_email=user_email,
                 user_id=user_id,
                 user_info=user_info,
             )
 
+            # Build and compile the graph
+            graph = self._build_graph(tools)
+
             # Build system prompt
-            system_prompt = self._build_system_prompt(
-                user_name=user_name,
-                last_product_ids=last_product_ids,
-                last_product_names=last_product_names,
-            )
+            system_prompt = self._build_system_prompt(user_name=user_name)
 
-            # Create and execute agent
-            logger.info("Creating agent with %d tools", len(tools))
-            agent_executor = create_agent(
-                model=self.llm,
-                tools=tools,
-                system_prompt=system_prompt,
-            )
+            # Prepare initial messages with system prompt + user query
+            # LangGraph initial messages: system prompt + user query
+            initial_messages = [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_query),
+            ]
 
-            result = await agent_executor.ainvoke({
-                "messages": [("user", user_query)]
+            # Execute the graph
+            result = await graph.ainvoke({
+                "messages": initial_messages,
+                "products": [],
+                "source": None,
+                "has_results": False,
+                "user_info": None,
+                "purchase_history": [],
             })
 
-            # Extract response
-            response_text = self._extract_response_from_agent(result)
-            source = self._determine_source(result, state)
-            products = state.products
-            has_results = state.has_results
+            # Extract response from the last AI message
+            response_text = self._extract_response(result)
+            products = result.get("products", [])
+            source = result.get("source", "general_chat")
+            has_results = result.get("has_results", False)
 
             logger.info(
-                "Agent workflow complete — source: %s, products: %d",
+                "LangGraph workflow complete — source: %s, products: %d",
                 source,
                 len(products),
             )
@@ -393,7 +353,7 @@ CONTEXT HANDLING:
             }
 
         except Exception as e:
-            logger.error("Agent workflow error: %s", e)
+            logger.error("LangGraph workflow error: %s", e)
             return {
                 "message": "I apologize, but I encountered an error. Please try again.",
                 "products": [],
@@ -404,6 +364,18 @@ CONTEXT HANDLING:
                 "purchase_history": [],
                 "error": str(e),
             }
+
+    def _extract_response(self, result: dict) -> str:
+        """Extract the final AI response text from graph result."""
+        messages = result.get("messages", [])
+        # Walk backwards to find the last AIMessage (not a ToolMessage)
+        for msg in reversed(messages):
+            if isinstance(msg, AIMessage) and not msg.tool_calls:
+                return msg.content if msg.content else ""
+            if isinstance(msg, AIMessage) and msg.content:
+                # AIMessage with tool_calls but also content (some models do this)
+                return msg.content
+        return "I apologize, but I couldn't generate a response."
 
     async def execute_action(
         self,
@@ -423,7 +395,6 @@ CONTEXT HANDLING:
         Returns:
             Action result dict with success status, message, and optional details
         """
-
         try:
             if not user_info:
                 raise ValueError("user_info is required but was not provided")
@@ -476,7 +447,6 @@ CONTEXT HANDLING:
                 }
 
             else:
-                # Should never happen with enum validation, but good to have
                 return {
                     "success": False,
                     "message": f"Unknown action: {action.value}",

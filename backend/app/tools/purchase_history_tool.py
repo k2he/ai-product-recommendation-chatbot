@@ -1,24 +1,22 @@
-"""Purchase history tool for the chatbot agent."""
+"""Purchase history tool for the chatbot agent.
+
+No longer mutates external AgentState — returns text only.
+"""
 
 import logging
 from typing import Callable
 
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 
 from app.database.mongodb import mongodb
-from app.models.state import AgentState
 
 logger = logging.getLogger(__name__)
 
 
-def create_purchase_history_tool(
-    state: AgentState,
-    user_id: str,
-) -> Callable:
+def create_purchase_history_tool(user_id: str) -> BaseTool:
     """Create a get_purchase_history tool with injected dependencies.
 
     Args:
-        state: Shared AgentState to store purchase history for API response
         user_id: Current user's ID
 
     Returns:
@@ -46,11 +44,6 @@ def create_purchase_history_tool(
             # Query MongoDB for user's orders
             orders = await mongodb.get_user_orders(user_id)
 
-            # Store orders in shared state for API response
-            state.purchase_history = orders
-            state.source = "purchase_history"
-            state.has_results = bool(orders)
-
             if not orders:
                 return "You don't have any purchase history yet."
 
@@ -77,4 +70,3 @@ def create_purchase_history_tool(
             return f"Failed to retrieve purchase history: {str(e)}"
 
     return get_purchase_history
-

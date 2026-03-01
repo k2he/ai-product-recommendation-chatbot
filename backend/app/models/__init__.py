@@ -8,16 +8,10 @@ from app.models.request import (
     ChatResponse,
     ErrorResponse,
     HealthResponse,
-    IntentResponse,
     IntentType,
 )
 from app.models.user import UserInDB
 from app.models.order import OrderInDB, LineItem
-from app.models.state import AgentState
-
-# Rebuild AgentState after all forward-referenced models are imported
-# This resolves the Pydantic forward reference issue
-AgentState.model_rebuild()
 
 __all__ = [
     # User models
@@ -26,8 +20,6 @@ __all__ = [
     "Product",
     "ProductBase",
     "ProductDocument",
-    # Agent state model
-    "AgentState",
     # Order models
     "OrderInDB",
     "LineItem",
@@ -37,7 +29,6 @@ __all__ = [
     "ActionRequest",
     "ActionResponse",
     "IntentType",
-    "IntentResponse",
     "HealthResponse",
     "ErrorResponse",
 ]

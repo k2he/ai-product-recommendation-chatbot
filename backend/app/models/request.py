@@ -17,17 +17,6 @@ class IntentType(str, Enum):
     GENERAL_CHAT = "general_chat"
 
 
-class IntentResponse(BaseModel):
-    """Structured output model for intent classification."""
-
-    intent: IntentType = Field(
-        description="The classified intent: 'search', 'email', 'purchase', or 'general_chat'"
-    )
-    product_hint: Optional[str] = Field(
-        default=None,
-        description="The product name mentioned by the user, or null if none"
-    )
-
 
 class ChatRequest(BaseModel):
     """Chat request model."""

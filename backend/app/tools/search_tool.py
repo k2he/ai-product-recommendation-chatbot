@@ -1,24 +1,22 @@
-"""Search products tool for the chatbot agent."""
+"""Search products tool for the chatbot agent.
+
+Returns formatted text. The post-processing node re-runs SQR to populate
+AgentState.products only when no cached products are found in the ToolMessage.
+"""
 
 import logging
 from typing import Callable
 
-from langchain_core.tools import tool
-
-from app.models.state import AgentState
+from langchain_core.tools import BaseTool, tool
 
 logger = logging.getLogger(__name__)
 
 
-def create_search_products_tool(
-    run_sqr: Callable,
-    state: AgentState,
-) -> Callable:
-    """Create a search_products tool with injected dependencies.
+def create_search_products_tool(run_sqr: Callable) -> BaseTool:
+    """Create a search_products tool with injected SQR dependency.
 
     Args:
         run_sqr: Async function to run the SelfQueryingRetriever
-        state: Shared AgentState to store products for API response
 
     Returns:
         A LangChain tool function
@@ -49,11 +47,6 @@ def create_search_products_tool(
             # Run the SelfQueryingRetriever
             products = await run_sqr(query)
 
-            # Append products to shared state for API response (accumulate across multiple searches)
-            state.products.extend(products)
-            state.source = "vector_db" if products else "none"
-            state.has_results = bool(products)
-
             if not products:
                 return "No products found matching your search. Try different keywords or browse our categories."
 
@@ -76,9 +69,6 @@ def create_search_products_tool(
 
         except Exception as e:
             logger.error("search_products tool failed: %s", e)
-            state.products = []
-            state.source = "none"
-            state.has_results = False
             return f"Search failed: {str(e)}. Please try again."
 
     return search_products

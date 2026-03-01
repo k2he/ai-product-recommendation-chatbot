@@ -1,7 +1,7 @@
-"""LangChain tools for the chatbot agent.
+"""LangGraph agent tools for the chatbot workflow.
 
 This module exports tools that the chatbot agent can invoke:
-- search_products: Search the product catalog
+- search_products: Search the product catalog via SelfQueryingRetriever
 - send_product_email: Email product details to the user
 - purchase_product: Place an order for a product
 - search_web: Search the web for factual information (via Tavily)

@@ -1,24 +1,21 @@
-"""User information tool for the chatbot agent."""
+"""User information tool for the chatbot agent.
+
+No longer mutates external AgentState — returns text only.
+"""
 
 import logging
-from typing import Callable
 
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 
-from app.models.state import AgentState
 from app.models.user import UserInDB
 
 logger = logging.getLogger(__name__)
 
 
-def create_user_info_tool(
-    state: AgentState,
-    user_info: UserInDB,
-) -> Callable:
+def create_user_info_tool(user_info: UserInDB) -> BaseTool:
     """Create a get_user_info tool with injected dependencies.
 
     Args:
-        state: Shared AgentState to store user info for API response
         user_info: Current user's information
 
     Returns:
@@ -42,11 +39,6 @@ def create_user_info_tool(
         try:
             logger.info("get_user_info tool called for user: %s", user_info.userId)
 
-            # Store user info in shared state for API response
-            state.user_info = user_info
-            state.source = "user_info"
-            state.has_results = True
-
             # Format for LLM to use in response
             return (
                 f"User Account Information:\n"
@@ -60,4 +52,3 @@ def create_user_info_tool(
             return f"Failed to retrieve account information: {str(e)}"
 
     return get_user_info
-

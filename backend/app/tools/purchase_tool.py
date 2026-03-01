@@ -1,9 +1,13 @@
-"""Purchase product tool for the chatbot agent."""
+"""Purchase product tool for the chatbot agent.
+
+No longer mutates external state — returns a text result.
+The inconsistent dict-based state access (state["source"]) is removed.
+"""
 
 import logging
-from typing import Any, Callable, Optional
+from typing import Callable, Optional
 
-from langchain_core.tools import tool
+from langchain_core.tools import BaseTool, tool
 
 from app.models.product import Product
 
@@ -12,16 +16,14 @@ logger = logging.getLogger(__name__)
 
 def create_purchase_tool(
     get_product_by_id: Callable,
-    state: dict[str, Any],
     user_name: str,
     user_email: str,
     user_id: str,
-) -> Callable:
+) -> BaseTool:
     """Create a purchase_product tool with injected dependencies.
 
     Args:
         get_product_by_id: Async function to fetch product by SKU
-        state: Shared state dict for tracking action results
         user_name: User's first name for personalization
         user_email: User's email address for confirmation
         user_id: User's ID for generating order ID
@@ -59,12 +61,6 @@ def create_purchase_tool(
             # Generate order ID
             order_id = f"ORD-{product_id}-{user_id[-4:]}"
 
-            # Update state for API response
-            state["source"] = "action"
-            state["action_type"] = "purchase"
-            state["action_product"] = product
-            state["order_id"] = order_id
-
             logger.info("Purchase completed for product %s, order ID: %s", product_id, order_id)
             return (
                 f"Great choice! Your order for **{product.name}** has been placed. "
@@ -78,4 +74,3 @@ def create_purchase_tool(
             return f"Failed to place order: {str(e)}. Please try again."
 
     return purchase_product
-
