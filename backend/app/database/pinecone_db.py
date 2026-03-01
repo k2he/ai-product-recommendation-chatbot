@@ -7,7 +7,7 @@ from langchain_classic.chains.query_constructor.schema import AttributeInfo
 from langchain_classic.chains.query_constructor.ir import Comparison, Operation
 from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
 from langchain_community.query_constructors.pinecone import PineconeTranslator
-from langchain_ollama.embeddings import OllamaEmbeddings
+from langchain_google_genai import GoogleGenerativeAIEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
 
@@ -124,7 +124,7 @@ class PineconeDB:
     def __init__(self) -> None:
         self.client: Optional[Pinecone] = None
         self.index = None
-        self.embeddings: Optional[OllamaEmbeddings] = None
+        self.embeddings: Optional[GoogleGenerativeAIEmbeddings] = None
         self.vectorstore: Optional[PineconeVectorStore] = None
 
     async def connect(self) -> None:
@@ -132,9 +132,11 @@ class PineconeDB:
         try:
             self.client = Pinecone(api_key=settings.pinecone_api_key)
 
-            self.embeddings = OllamaEmbeddings(
-                base_url=settings.ollama_base_url,
-                model=settings.ollama_embedding_model,
+            self.embeddings = GoogleGenerativeAIEmbeddings(
+                model=settings.gemini_embedding_model,
+                google_api_key=settings.google_api_key,
+                task_type="RETRIEVAL_DOCUMENT",
+                output_dimensionality=settings.gemini_embedding_dimensions,
             )
 
             existing_indexes = [idx.name for idx in self.client.list_indexes()]

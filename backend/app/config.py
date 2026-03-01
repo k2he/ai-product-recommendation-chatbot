@@ -34,17 +34,18 @@ class Settings(BaseSettings):
     # Pinecone
     pinecone_api_key: str = Field(default="", description="Pinecone API key")
     pinecone_environment: str = Field(default="gcp-starter", description="Pinecone environment")
-    pinecone_index_name: str = "ai-product-recommendation-chatbot-bestbuy"
-    pinecone_dimension: int = 1024  # Matches ollama embedding dimension
+    pinecone_index_name: str = "ai-product-recommendation-chatbot-bestbuy-gemini"
+    pinecone_dimension: int = 1536  # gemini-embedding-001 truncated via Matryoshka to 1536
     pinecone_metric: str = "cosine"
     pinecone_namespace: str = "product-catalog"
 
-    # Ollama
-    ollama_base_url: str = "http://localhost:11434"
-    ollama_model: str = "gpt-oss:20b"
-    ollama_embedding_model: str = "mxbai-embed-large"
-    ollama_temperature: float = 0.7
-    ollama_max_tokens: int = 2000
+    # Google Gemini
+    google_api_key: str = Field(default="", description="Google AI Studio API key")
+    gemini_model: str = "gemini-3-flash-preview"
+    gemini_embedding_model: str = "models/gemini-embedding-001"
+    gemini_temperature: float = 0.7
+    gemini_max_tokens: int = 2000
+    gemini_embedding_dimensions: int = 1536  # Matryoshka truncation of gemini-embedding-001 (full=3072)
 
     # Tavily
     tavily_api_key: str = Field(default="", description="Tavily API key")

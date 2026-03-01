@@ -20,7 +20,7 @@ from typing import Any, Optional
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
-from langchain_ollama import ChatOllama
+from langchain_google_genai import ChatGoogleGenerativeAI
 
 from app.config import get_settings
 from app.database.mongodb import mongodb
@@ -59,10 +59,10 @@ class ChatbotService:
         because pinecone_db.connect() is called in main.py's lifespan handler
         before the ChatbotService singleton is first used.
         """
-        self.llm = ChatOllama(
-            base_url=settings.ollama_base_url,
-            model=settings.ollama_model,
-            temperature=settings.ollama_temperature,
+        self.llm = ChatGoogleGenerativeAI(
+            model=settings.gemini_model,
+            google_api_key=settings.google_api_key,
+            temperature=settings.gemini_temperature,
         )
 
         # SQR is lazily initialized on first use so that the service module can
