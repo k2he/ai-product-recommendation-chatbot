@@ -44,7 +44,6 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.0-flash"
     gemini_embedding_model: str = "models/gemini-embedding-001"
     gemini_temperature: float = 0.0  # 0 = deterministic; prevents hallucinating product names, prices, and SKUs
-    gemini_max_tokens: int = 2000
     gemini_embedding_dimensions: int = 768  # Matryoshka truncation of gemini-embedding-001 (full=3072)
 
     # Tavily
