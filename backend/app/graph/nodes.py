@@ -163,6 +163,20 @@ async def process_results_node(
             elif tool_name == "get_purchase_history":
                 source = "purchase_history"
                 has_results = True
+                # Parse embedded JSON block written by purchase_history_tool.py
+                try:
+                    json_start = content.index("```json\n") + 8
+                    json_end = content.index("\n```", json_start)
+                    purchase_history = json.loads(content[json_start:json_end])
+                    logger.debug(
+                        "process_results_node: parsed %d orders from ToolMessage",
+                        len(purchase_history),
+                    )
+                except (ValueError, KeyError, Exception) as exc:
+                    logger.debug(
+                        "process_results_node: no embedded JSON in get_purchase_history ToolMessage (%s)",
+                        exc,
+                    )
 
             elif tool_name == "search_web":
                 source = "general_chat_with_search"

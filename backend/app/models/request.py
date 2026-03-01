@@ -73,6 +73,10 @@ class ChatResponse(BaseModel):
         None,
         description="Structured user account data when source is 'user_info' — keys: firstName, lastName, email, phone",
     )
+    purchase_history: list[dict] = Field(
+        default_factory=list,
+        description="List of serialised OrderInDB objects when source is 'purchase_history'",
+    )
 
     model_config = {
         "json_schema_extra": {

@@ -328,10 +328,15 @@ CONTEXT HANDLING:
             # JSON block when source == 'user_info'.
             structured_user_info = result.get("user_info")
 
+            # process_results_node populates purchase_history from the ToolMessage
+            # JSON block when source == 'purchase_history'.
+            purchase_history = result.get("purchase_history", [])
+
             logger.info(
-                "LangGraph workflow complete — source: %s, products: %d",
+                "LangGraph workflow complete — source: %s, products: %d, orders: %d",
                 source,
                 len(products),
+                len(purchase_history),
             )
 
             return {
@@ -341,6 +346,7 @@ CONTEXT HANDLING:
                 "has_results": has_results,
                 "source": source,
                 "user_info": structured_user_info,
+                "purchase_history": purchase_history,
                 "error": None,
             }
 
