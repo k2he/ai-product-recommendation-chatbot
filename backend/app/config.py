@@ -35,17 +35,17 @@ class Settings(BaseSettings):
     pinecone_api_key: str = Field(default="", description="Pinecone API key")
     pinecone_environment: str = Field(default="gcp-starter", description="Pinecone environment")
     pinecone_index_name: str = "ai-product-recommendation-chatbot-bestbuy-gemini"
-    pinecone_dimension: int = 1536  # gemini-embedding-001 truncated via Matryoshka to 1536
+    pinecone_dimension: int = 768  # gemini-embedding-001 truncated via Matryoshka to 768
     pinecone_metric: str = "cosine"
     pinecone_namespace: str = "product-catalog"
 
     # Google Gemini
     google_api_key: str = Field(default="", description="Google AI Studio API key")
-    gemini_model: str = "gemini-3-flash-preview"
+    gemini_model: str = "gemini-2.0-flash"
     gemini_embedding_model: str = "models/gemini-embedding-001"
-    gemini_temperature: float = 0.7
+    gemini_temperature: float = 0.0  # 0 = deterministic; prevents hallucinating product names, prices, and SKUs
     gemini_max_tokens: int = 2000
-    gemini_embedding_dimensions: int = 1536  # Matryoshka truncation of gemini-embedding-001 (full=3072)
+    gemini_embedding_dimensions: int = 768  # Matryoshka truncation of gemini-embedding-001 (full=3072)
 
     # Tavily
     tavily_api_key: str = Field(default="", description="Tavily API key")
