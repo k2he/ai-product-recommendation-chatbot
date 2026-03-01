@@ -47,10 +47,10 @@ async def process_results_node(
     """Post-processing: extract structured data from the message history.
 
     Examines ``ToolMessage`` entries and AI ``tool_calls`` to populate:
-    - ``products``        — Product objects for the API response (re-uses cached
-                            results stored in the ToolMessage to avoid a second
-                            Pinecone call, falling back to a fresh SQR query only
-                            when the cache is absent).
+    - ``products``        — Product objects for the API response.  Accumulated
+                            across ALL ``search_products`` tool calls so that
+                            multi-category queries (e.g. "monitors and wearables")
+                            return the full combined product list.
     - ``source``          — One of ``'vector_db'``, ``'action'``,
                             ``'general_chat'``, ``'user_info'``,
                             ``'purchase_history'``, or
@@ -62,7 +62,8 @@ async def process_results_node(
     Args:
         state:   Current agent state.
         run_sqr: Async callable that executes the SelfQueryingRetriever.
-                 Only invoked when no cached products are found in state.
+                 Only invoked as a fallback when no embedded JSON is found
+                 in a ToolMessage.
 
     Returns:
         Dict with the populated result fields.
@@ -75,16 +76,26 @@ async def process_results_node(
     purchase_history: list = []
 
     tool_names_called: list[str] = []
-    search_query: Optional[str] = None  # query used by search_products tool
+    # Collect ALL search queries in call order so the SQR fallback can
+    # replay every search that had no embedded JSON.
+    search_queries: list[str] = []
+
+    # Map tool_call_id → query so each ToolMessage can be matched to its query
+    call_id_to_query: dict[str, str] = {}
 
     for msg in messages:
-        # Collect tool names from AI tool_call messages
+        # Collect tool names and map call IDs → query strings
         if isinstance(msg, AIMessage) and msg.tool_calls:
             for tc in msg.tool_calls:
                 name = tc.get("name", "")
                 tool_names_called.append(name)
-                if name == "search_products" and not search_query:
-                    search_query = tc.get("args", {}).get("query", "")
+                if name == "search_products":
+                    query = tc.get("args", {}).get("query", "")
+                    call_id = tc.get("id", "")
+                    if query:
+                        search_queries.append(query)
+                        if call_id:
+                            call_id_to_query[call_id] = query
 
         # Extract structured data from tool result messages
         if isinstance(msg, ToolMessage):
@@ -92,22 +103,43 @@ async def process_results_node(
             tool_name = getattr(msg, "name", "") or ""
 
             if tool_name == "search_products":
-                # C2 fix: try to parse cached products embedded in the ToolMessage
-                # before falling back to a second Pinecone query.
                 if "Found" in content and "products" in content:
-                    # Attempt to load pre-serialised Product list from JSON block
+                    source = "vector_db"
+                    has_results = True
+                    # Try to parse the embedded JSON block written by search_tool.py.
+                    # Each ToolMessage carries the products from its own SQR call,
+                    # so we EXTEND (not replace) the accumulator to support
+                    # multi-category queries.
                     try:
                         json_start = content.index("```json\n") + 8
                         json_end = content.index("\n```", json_start)
                         cached = json.loads(content[json_start:json_end])
-                        products = [Product(**p) for p in cached]
-                        has_results = True
-                    except (ValueError, KeyError, Exception):
-                        # No embedded JSON — will fall back to SQR below
-                        has_results = True
-                    source = "vector_db"
+                        new_products = [Product(**p) for p in cached]
+                        # Deduplicate by SKU before extending
+                        existing_skus = {p.sku for p in products}
+                        products.extend(
+                            p for p in new_products if p.sku not in existing_skus
+                        )
+                        # Remove this query from the fallback list — it was resolved
+                        tool_call_id = getattr(msg, "tool_call_id", "")
+                        resolved_query = call_id_to_query.get(tool_call_id)
+                        if resolved_query and resolved_query in search_queries:
+                            search_queries.remove(resolved_query)
+                        logger.debug(
+                            "process_results_node: parsed %d products from ToolMessage "
+                            "(total so far: %d)",
+                            len(new_products),
+                            len(products),
+                        )
+                    except (ValueError, KeyError, Exception) as exc:
+                        logger.debug(
+                            "process_results_node: no embedded JSON in ToolMessage (%s) "
+                            "— will use SQR fallback",
+                            exc,
+                        )
                 elif "No products found" in content:
-                    source = "none"
+                    if source != "vector_db":   # don't downgrade if another call succeeded
+                        source = "none"
 
             elif tool_name in ("send_product_email", "purchase_product"):
                 source = "action"
@@ -129,18 +161,31 @@ async def process_results_node(
     if not tool_names_called:
         source = "general_chat"
 
-    # C2 fix: only run a second SQR query when the product list is still empty
-    # (i.e., no embedded JSON was found in the ToolMessage).
-    if source == "vector_db" and not products and search_query:
-        logger.debug(
-            "process_results_node: no cached products in ToolMessage — "
-            "falling back to SQR for query: %s",
-            search_query,
-        )
-        try:
-            products = await run_sqr(search_query)
-        except Exception as exc:
-            logger.error("process_results_node: SQR fallback failed: %s", exc)
+    # SQR fallback: run for any search query whose ToolMessage had no embedded JSON.
+    # This covers both the single-query and multi-query cases.
+    if source == "vector_db" and search_queries:
+        for query in search_queries:
+            logger.debug(
+                "process_results_node: SQR fallback for query: %s", query
+            )
+            try:
+                fallback_products = await run_sqr(query)
+                existing_skus = {p.sku for p in products}
+                products.extend(
+                    p for p in fallback_products if p.sku not in existing_skus
+                )
+            except Exception as exc:
+                logger.error(
+                    "process_results_node: SQR fallback failed for query '%s': %s",
+                    query,
+                    exc,
+                )
+
+    logger.info(
+        "process_results_node: source=%s, total products=%d",
+        source or "general_chat",
+        len(products),
+    )
 
     return {
         "products": products,

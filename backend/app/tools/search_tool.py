@@ -1,9 +1,12 @@
 """Search products tool for the chatbot agent.
 
-Returns formatted text. The post-processing node re-runs SQR to populate
-AgentState.products only when no cached products are found in the ToolMessage.
+Returns formatted text followed by an embedded JSON block so that
+``process_results_node`` can reconstruct the full ``Product`` list from the
+``ToolMessage`` without issuing a second Pinecone query — even when the tool
+is called multiple times in one turn (e.g. "show me monitors and wearables").
 """
 
+import json
 import logging
 from typing import Callable
 
@@ -19,7 +22,7 @@ def create_search_products_tool(run_sqr: Callable) -> BaseTool:
         run_sqr: Async function to run the SelfQueryingRetriever
 
     Returns:
-        A LangChain tool function
+        A LangGraph-compatible BaseTool
     """
 
     @tool
@@ -39,12 +42,12 @@ def create_search_products_tool(run_sqr: Callable) -> BaseTool:
             query: Natural language search query describing what the user wants
 
         Returns:
-            Formatted list of matching products with names, prices, and ratings
+            Formatted list of matching products with names, prices, and ratings,
+            followed by an embedded JSON block for structured processing.
         """
         try:
             logger.info("search_products tool called with query: %s", query)
 
-            # Run the SelfQueryingRetriever
             products = await run_sqr(query)
 
             if not products:
@@ -63,9 +66,16 @@ def create_search_products_tool(run_sqr: Callable) -> BaseTool:
                     f"   {p.shortDescription[:150]}..."
                 )
 
-            result = f"Found {len(products)} products:\n\n" + "\n\n".join(lines)
-            logger.info("search_products returning %d products", len(products))
-            return result
+            human_text = f"Found {len(products)} products:\n\n" + "\n\n".join(lines)
+
+            # Embed serialised Product list so process_results_node can
+            # reconstruct Product objects for the API response without a
+            # second Pinecone call.  The LLM ignores the JSON block.
+            product_dicts = [p.model_dump() for p in products[:5]]
+            json_block = f"\n```json\n{json.dumps(product_dicts)}\n```"
+
+            logger.info("search_products returning %d products for query: %s", len(products), query)
+            return human_text + json_block
 
         except Exception as e:
             logger.error("search_products tool failed: %s", e)
