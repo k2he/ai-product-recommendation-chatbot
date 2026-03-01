@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react';
 import { Bot, User, AlertCircle, CheckCircle, Loader2 } from 'lucide-react';
 import ProductCard from './ProductCard';
 import PurchaseHistoryList from './PurchaseHistoryList';
+import UserInfoCard from './UserInfoCard';
 
 const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
   const messagesEndRef = useRef(null);
@@ -46,6 +47,11 @@ const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
 
       /* ── Assistant message ─────────────────────────────────────────── */
       case 'assistant': {
+        const isUserInfo      = message.source === 'user_info';
+        const isPurchaseHistory = message.source === 'purchase_history';
+        const hasProducts     = message.products && message.products.length > 0;
+        const hasOrders       = message.purchaseHistory && message.purchaseHistory.length > 0;
+
         return (
           <div key={message.id} className="flex justify-start mb-4">
             <div className="flex items-start gap-2 max-w-[90%]">
@@ -54,31 +60,41 @@ const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
               </div>
               <div className="flex-1">
 
-                {/* Main response text */}
-                <div className="bg-gray-100 rounded-lg rounded-tl-none px-4 py-3 mb-2">
-                  <p className="text-sm text-gray-800 whitespace-pre-wrap">{message.content}</p>
-                  {message.source && (
-                    <p className="text-xs text-gray-400 mt-2">
-                      Source:{' '}
-                      {message.source === 'vector_db'
-                        ? 'Pinecone Database'
-                        : message.source === 'none'
-                        ? 'No Results'
-                        : message.source === 'action'
-                        ? 'Action'
-                        : message.source === 'general_chat'
-                        ? 'Conversation'
-                        : message.source === 'general_chat_with_search'
-                        ? 'Conversation with Web Search (Tavily)'
-                        : message.source === 'purchase_history'
-                        ? 'Purchase History'
-                        : 'N/A'}
-                    </p>
-                  )}
-                </div>
+                {/* ── Main response text bubble ─────────────────────────
+                    Hidden for user_info/purchase_history when a rich card
+                    is available — the card IS the response.              */}
+                {!(isUserInfo || isPurchaseHistory) && (
+                  <div className="bg-gray-100 rounded-lg rounded-tl-none px-4 py-3 mb-2">
+                    <p className="text-sm text-gray-800 whitespace-pre-wrap">{message.content}</p>
+                    {message.source && (
+                      <p className="text-xs text-gray-400 mt-2">
+                        Source:{' '}
+                        {message.source === 'vector_db'
+                          ? 'Pinecone Database'
+                          : message.source === 'none'
+                          ? 'No Results'
+                          : message.source === 'action'
+                          ? 'Action'
+                          : message.source === 'general_chat'
+                          ? 'Conversation'
+                          : message.source === 'general_chat_with_search'
+                          ? 'Conversation with Web Search (Tavily)'
+                          : 'N/A'}
+                      </p>
+                    )}
+                  </div>
+                )}
 
-                {/* Product cards grid */}
-                {message.products && message.products.length > 0 && (
+                {/* ── User info card ──────────────────────────────────── */}
+                {isUserInfo && (
+                  <UserInfoCard
+                    userInfo={message.userInfo}
+                    messageContent={message.content}
+                  />
+                )}
+
+                {/* ── Product cards grid ──────────────────────────────── */}
+                {hasProducts && (
                   <>
                     <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mt-2">
                       {message.products.map((product) => (
@@ -91,8 +107,7 @@ const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
                         />
                       ))}
                     </div>
-
-                    {/* CTA banner — always shown when products are present */}
+                    {/* CTA banner */}
                     <div className="flex items-start gap-2 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 mt-4">
                       <span className="text-lg leading-none mt-0.5">📬</span>
                       <p className="text-sm font-semibold text-blue-700 leading-snug">
@@ -102,9 +117,16 @@ const MessageList = ({ messages, onPurchase, onEmail, loading }) => {
                   </>
                 )}
 
-                {/* Purchase History List */}
-                {message.purchaseHistory && message.purchaseHistory.length > 0 && (
+                {/* ── Purchase history cards ──────────────────────────── */}
+                {isPurchaseHistory && hasOrders && (
                   <PurchaseHistoryList orders={message.purchaseHistory} />
+                )}
+
+                {/* ── Fallback: purchase_history source but no orders ── */}
+                {isPurchaseHistory && !hasOrders && (
+                  <div className="bg-gray-100 rounded-lg rounded-tl-none px-4 py-3 mb-2">
+                    <p className="text-sm text-gray-800 whitespace-pre-wrap">{message.content}</p>
+                  </div>
                 )}
 
               </div>

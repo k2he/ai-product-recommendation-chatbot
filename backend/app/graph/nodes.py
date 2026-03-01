@@ -148,6 +148,17 @@ async def process_results_node(
             elif tool_name == "get_user_info":
                 source = "user_info"
                 has_results = True
+                # Parse embedded JSON block written by user_info_tool.py
+                try:
+                    json_start = content.index("```json\n") + 8
+                    json_end = content.index("\n```", json_start)
+                    user_info = json.loads(content[json_start:json_end])
+                    logger.debug("process_results_node: parsed UserInDB from ToolMessage")
+                except (ValueError, KeyError, Exception) as exc:
+                    logger.debug(
+                        "process_results_node: no embedded JSON in get_user_info ToolMessage (%s)",
+                        exc,
+                    )
 
             elif tool_name == "get_purchase_history":
                 source = "purchase_history"

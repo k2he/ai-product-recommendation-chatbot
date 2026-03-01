@@ -67,7 +67,11 @@ class ChatResponse(BaseModel):
     has_results: bool = Field(..., description="Whether products were found")
     source: str = Field(
         ...,
-        description="Source of results: 'vector_db' (products from database), 'action' (email/purchase), 'general_chat' (conversation), 'general_chat_with_search' (conversation with search tool), or 'none' (no results)",
+        description="Source of results: 'vector_db' (products from database), 'action' (email/purchase), 'general_chat' (conversation), 'general_chat_with_search' (conversation with search tool), 'user_info' (user account info), 'purchase_history' (order history), or 'none' (no results)",
+    )
+    user_info: Optional[dict] = Field(
+        None,
+        description="Structured user account data when source is 'user_info' — keys: firstName, lastName, email, phone",
     )
 
     model_config = {

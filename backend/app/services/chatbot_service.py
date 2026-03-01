@@ -1,7 +1,7 @@
 """LangGraph-based chatbot service — orchestrates requests through the agent graph.
 
 Responsibilities:
-  1. LLM initialisation (ChatOllama)
+  1. LLM initialisation (ChatGoogleGenerativeAI / Gemini)
   2. SelfQueryingRetriever lazy init and product retrieval (_get_or_build_sqr)
   3. Build per-request tools with injected user context (_build_tools)
   4. Build the system prompt (_build_system_prompt)
@@ -26,7 +26,6 @@ from app.config import get_settings
 from app.database.mongodb import mongodb
 from app.database.pinecone_db import pinecone_db
 from app.graph.builder import build_chatbot_graph
-from app.graph.state import AgentState
 from app.models import UserInDB
 from app.models.product import Product
 from app.models.request import IntentType
@@ -151,13 +150,7 @@ class ChatbotService:
             logger.warning("Failed to retrieve user %s: %s", user_id, e)
             return None
 
-    def _build_tools(
-        self,
-        user_name: str,
-        user_email: str,
-        user_id: str,
-        user_info: UserInDB,
-    ) -> list:
+    def _build_tools(self, user_info: UserInDB) -> list:
         """Build the tools list with injected context.
 
         Tools no longer receive an AgentState parameter — they return text
@@ -165,14 +158,15 @@ class ChatbotService:
         message history.
 
         Args:
-            user_name: User's first name
-            user_email: User's email address
-            user_id: User's ID
             user_info: Full user information object
 
         Returns:
             List of LangChain tool functions
         """
+        user_name = user_info.firstName if user_info.firstName else "there"
+        user_email = str(user_info.email)
+        user_id = user_info.userId
+
         tools = []
 
         # Tool 1: Search products (SQR runs inside this tool)
@@ -199,9 +193,9 @@ class ChatbotService:
         )
         tools.append(purchase_tool)
 
-        # Tool 4: Get user information
+        # Tool 4: Get user information (fetches live from UserService at call time)
         user_info_tool = create_user_info_tool(
-            user_info=user_info,
+            user_id=user_id,
         )
         tools.append(user_info_tool)
 
@@ -295,18 +289,11 @@ CONTEXT HANDLING:
 
             logger.info("Processing request for user: %s", user_info.userId)
 
-            # Extract user details
+            # Extract user name for the system prompt
             user_name = user_info.firstName if user_info.firstName else "there"
-            user_email = str(user_info.email)
-            user_id = user_info.userId
 
             # Build tools with injected context (no state parameter)
-            tools = self._build_tools(
-                user_name=user_name,
-                user_email=user_email,
-                user_id=user_id,
-                user_info=user_info,
-            )
+            tools = self._build_tools(user_info=user_info)
 
             # Build and compile the graph
             graph = self._build_graph(tools)
@@ -337,6 +324,10 @@ CONTEXT HANDLING:
             source = result.get("source", "general_chat")
             has_results = result.get("has_results", False)
 
+            # process_results_node populates user_info from the ToolMessage
+            # JSON block when source == 'user_info'.
+            structured_user_info = result.get("user_info")
+
             logger.info(
                 "LangGraph workflow complete — source: %s, products: %d",
                 source,
@@ -349,6 +340,7 @@ CONTEXT HANDLING:
                 "conversation_id": conversation_id,
                 "has_results": has_results,
                 "source": source,
+                "user_info": structured_user_info,
                 "error": None,
             }
 
