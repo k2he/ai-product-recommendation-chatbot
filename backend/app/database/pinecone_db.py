@@ -6,7 +6,7 @@ from typing import Any, Optional
 from langchain_classic.chains.query_constructor.schema import AttributeInfo
 from langchain_classic.chains.query_constructor.ir import Comparison, Operation
 from langchain_classic.retrievers.self_query.base import SelfQueryRetriever
-from langchain_classic.retrievers.self_query.pinecone import PineconeTranslator
+from langchain_community.query_constructors.pinecone import PineconeTranslator
 from langchain_ollama.embeddings import OllamaEmbeddings
 from langchain_pinecone import PineconeVectorStore
 from pinecone import Pinecone, ServerlessSpec
