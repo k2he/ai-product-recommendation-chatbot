@@ -366,16 +366,49 @@ CONTEXT HANDLING:
             }
 
     def _extract_response(self, result: dict) -> str:
-        """Extract the final AI response text from graph result."""
+        """Extract the final AI response text from graph result.
+
+        ``AIMessage.content`` can be either a plain ``str`` or a ``list`` of
+        content blocks (e.g. ``[{"type": "text", "text": "…"}]``) when the
+        model returns a multimodal / structured response.  Both cases are
+        normalised to a plain string here so that callers can safely call
+        ``.strip()`` on the result.
+        """
         messages = result.get("messages", [])
         # Walk backwards to find the last AIMessage (not a ToolMessage)
         for msg in reversed(messages):
             if isinstance(msg, AIMessage) and not msg.tool_calls:
-                return msg.content if msg.content else ""
+                return self._content_to_str(msg.content)
             if isinstance(msg, AIMessage) and msg.content:
                 # AIMessage with tool_calls but also content (some models do this)
-                return msg.content
+                return self._content_to_str(msg.content)
         return "I apologize, but I couldn't generate a response."
+
+    @staticmethod
+    def _content_to_str(content: Any) -> str:
+        """Normalise an AIMessage ``content`` value to a plain string.
+
+        LangChain ``AIMessage.content`` is typed as ``str | list``.  When it is
+        a list it contains content-block dicts such as
+        ``{"type": "text", "text": "…"}``.  This helper extracts all text
+        blocks and joins them so the rest of the service always works with a
+        plain ``str``.
+        """
+        if isinstance(content, str):
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict):
+                    # Standard content-block format: {"type": "text", "text": "…"}
+                    text = block.get("text") or block.get("content") or ""
+                    if text:
+                        parts.append(str(text))
+            return " ".join(parts)
+        # Fallback for any unexpected type
+        return str(content) if content else ""
 
     async def execute_action(
         self,
