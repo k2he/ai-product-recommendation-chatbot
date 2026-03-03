@@ -68,8 +68,8 @@ const ProductCard = ({ product, onPurchase, onEmail, loading }) => {
 
         {/* SKU */}
         <div className="flex items-center gap-1.5 mb-1.5">
-          <Barcode className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" />
-          <span className="text-xs text-gray-400">SKU:</span>
+{/*           <Barcode className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" /> */}
+          <span className="text-xs text-gray-400">SKU: </span>
           <span className="text-xs font-mono font-medium text-gray-600 select-all">
             {product.sku}
           </span>
