@@ -47,11 +47,11 @@ const OrderCard = ({ order, index }) => {
       {/* ── Order header (always visible) ─────────────────────────────── */}
       <button
         onClick={() => setExpanded((v) => !v)}
-        className="w-full text-left px-4 py-3.5 flex items-center gap-3 hover:bg-gray-50 transition-colors"
+        className="w-full text-left px-4 py-3.5 flex items-center gap-3 hover:bg-blue-50 transition-colors"
       >
         {/* Order icon */}
-        <div className="w-10 h-10 rounded-full bg-indigo-50 flex items-center justify-center flex-shrink-0">
-          <ShoppingBag className="w-5 h-5 text-indigo-500" />
+        <div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center flex-shrink-0">
+          <ShoppingBag className="w-5 h-5 text-blue-600" />
         </div>
 
         {/* Order meta */}
@@ -76,20 +76,20 @@ const OrderCard = ({ order, index }) => {
             <p className="text-base font-bold text-gray-900">${order.totalPrice.toFixed(2)}</p>
           </div>
           {expanded
-            ? <ChevronUp className="w-4 h-4 text-gray-400" />
-            : <ChevronDown className="w-4 h-4 text-gray-400" />}
+            ? <ChevronUp className="w-4 h-4 text-blue-400" />
+            : <ChevronDown className="w-4 h-4 text-blue-400" />}
         </div>
       </button>
 
       {/* ── Expandable line items ──────────────────────────────────────── */}
       {expanded && (
-        <div className="border-t border-gray-100">
-          <div className="divide-y divide-gray-50">
+        <div className="border-t border-blue-100">
+          <div className="divide-y divide-blue-50">
             {visibleItems.map((item, idx) => (
-              <div key={`${item.sku}-${idx}`} className="flex gap-3 px-4 py-3 hover:bg-gray-50 transition-colors">
+              <div key={`${item.sku}-${idx}`} className="flex gap-3 px-4 py-3 hover:bg-blue-50 transition-colors">
 
                 {/* Product image */}
-                <div className="flex-shrink-0 w-16 h-16 rounded-lg border border-gray-100 bg-gray-50 overflow-hidden flex items-center justify-center">
+                <div className="flex-shrink-0 w-16 h-16 rounded-lg border border-blue-100 bg-blue-50 overflow-hidden flex items-center justify-center">
                   {item.imgUrl ? (
                     <img
                       src={item.imgUrl.replace('//', 'https://')}
@@ -112,7 +112,7 @@ const OrderCard = ({ order, index }) => {
                   </p>
                   <div className="flex items-center gap-3">
                     <span className="text-xs text-gray-500">Qty: <span className="font-semibold text-gray-700">{item.quantity}</span></span>
-                    <span className="text-xs font-bold text-indigo-600">${item.total.toFixed(2)}</span>
+                    <span className="text-xs font-bold text-blue-600">${item.total.toFixed(2)}</span>
                   </div>
                 </div>
               </div>
@@ -120,13 +120,13 @@ const OrderCard = ({ order, index }) => {
           </div>
 
           {/* Order total footer */}
-          <div className="px-4 py-3 bg-gray-50 border-t border-gray-100 flex items-center justify-between">
+          <div className="px-4 py-3 bg-blue-50 border-t border-blue-100 flex items-center justify-between">
             <div className="flex items-center gap-2 text-xs text-gray-500">
               <Receipt className="w-3.5 h-3.5" />
               <span>{itemCount} {itemCount === 1 ? 'item' : 'items'} · Order #{order.orderNumber}</span>
             </div>
             <div className="text-sm font-bold text-gray-900">
-              Total: <span className="text-indigo-600">${order.totalPrice.toFixed(2)} CAD</span>
+              Total: <span className="text-blue-600">${order.totalPrice.toFixed(2)} CAD</span>
             </div>
           </div>
         </div>
@@ -149,19 +149,19 @@ const PurchaseHistoryList = ({ orders }) => {
     <div className="mt-3 space-y-3 max-w-2xl">
 
       {/* ── Summary banner ──────────────────────────────────────────────── */}
-      <div className="rounded-xl bg-gradient-to-r from-indigo-500 to-purple-600 px-5 py-4 flex items-center gap-4 shadow-sm">
-        <div className="w-10 h-10 rounded-full bg-white/20 flex items-center justify-center flex-shrink-0">
+      <div className="rounded-xl bg-gradient-to-br from-blue-50 to-blue-100 border border-blue-200 px-5 py-4 flex items-center gap-4 shadow-sm">
+        <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0">
           <ShoppingBag className="w-5 h-5 text-white" />
         </div>
         <div className="flex-1">
-          <p className="text-white/80 text-xs font-medium uppercase tracking-wider">Purchase History</p>
-          <p className="text-white font-bold text-base leading-tight">
+          <p className="text-blue-400 text-xs font-medium uppercase tracking-wider">Purchase History</p>
+          <p className="text-blue-900 font-bold text-base leading-tight">
             {orders.length} {orders.length === 1 ? 'Order' : 'Orders'} · {totalItems} Items
           </p>
         </div>
         <div className="text-right">
-          <p className="text-white/70 text-xs">Total Spent</p>
-          <p className="text-white font-bold text-lg">${totalSpent.toFixed(2)}</p>
+          <p className="text-blue-400 text-xs">Total Spent</p>
+          <p className="text-blue-900 font-bold text-lg">${totalSpent.toFixed(2)}</p>
         </div>
       </div>
 
