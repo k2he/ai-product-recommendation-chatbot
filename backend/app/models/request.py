@@ -17,17 +17,6 @@ class IntentType(str, Enum):
     GENERAL_CHAT = "general_chat"
 
 
-class IntentResponse(BaseModel):
-    """Structured output model for intent classification."""
-
-    intent: IntentType = Field(
-        description="The classified intent: 'search', 'email', 'purchase', or 'general_chat'"
-    )
-    product_hint: Optional[str] = Field(
-        default=None,
-        description="The product name mentioned by the user, or null if none"
-    )
-
 
 class ChatRequest(BaseModel):
     """Chat request model."""
@@ -78,7 +67,15 @@ class ChatResponse(BaseModel):
     has_results: bool = Field(..., description="Whether products were found")
     source: str = Field(
         ...,
-        description="Source of results: 'vector_db' (products from database), 'action' (email/purchase), 'general_chat' (conversation), 'general_chat_with_search' (conversation with search tool), or 'none' (no results)",
+        description="Source of results: 'vector_db' (products from database), 'action' (email/purchase), 'general_chat' (conversation), 'general_chat_with_search' (conversation with search tool), 'user_info' (user account info), 'purchase_history' (order history), or 'none' (no results)",
+    )
+    user_info: Optional[dict] = Field(
+        None,
+        description="Structured user account data when source is 'user_info' — keys: firstName, lastName, email, phone",
+    )
+    purchase_history: list[dict] = Field(
+        default_factory=list,
+        description="List of serialised OrderInDB objects when source is 'purchase_history'",
     )
 
     model_config = {

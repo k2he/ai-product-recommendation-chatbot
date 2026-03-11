@@ -1,4 +1,4 @@
-"""Services package."""
+"""Services package — chatbot_service uses LangGraph StateGraph for workflow execution."""
 
 from app.services.chatbot_service import ChatbotService, chatbot_service
 from app.services.data_loader import DataLoader

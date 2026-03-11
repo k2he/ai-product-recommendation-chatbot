@@ -1,40 +1,15 @@
 # Product Recommendation Chatbot
 
-A production-ready AI-powered chatbot that recommends BestBuy Canada products based on user needs, using RAG (Retrieval-Augmented Generation) with LangChain and Pinecone.
+A production-ready AI-powered chatbot that recommends BestBuy Canada products based on user needs, using RAG (Retrieval-Augmented Generation) with **LangGraph** and Pinecone.
 
 ---
 
-## 🎉 What's New
-
-### Recent Features (February 2026)
-
-**🆕 User Account Information**
-- Ask "Show my account info" to see your profile details
-- Displays name, email, and phone in a beautiful gradient card
-
-**🆕 Purchase History Viewer**
-- Ask "Show my purchase history" to view all past orders
-- Collapsible order cards with full line item details
-- Product images, quantities, and prices displayed
-- Automatic filtering of environmental fees
-
-**🆕 Purchase History Loading Script**
-- New `load_purchase_history.py` script to load order data
-- Automatically filters environmental fees during import
-- Supports multiple users with separate JSON files
-
-**✨ UI Improvements**
-- Automatic CTA banner displayed after product results (moved from AI prompt to UI)
-- Collapsible order interface for better user experience
-- Enhanced source indicators for all response types
-
----
 
 ## 🚀 Features
 
-- **Tool-Calling Agent** — Single LangChain agent with 6 tools that handles all user intents (search, email, purchase, account info, order history, web search)
+- **LangGraph ReAct Agent** — Explicit `StateGraph` with `ToolNode` that handles all user intents (search, email, purchase, account info, order history, web search) via 6 tools
 - **Intelligent Product Search** — Pinecone vector similarity search over BestBuy Canada catalogue data
-- **Self-Querying Retriever (SQR)** — Single LangChain component that decomposes a natural language query into a semantic search string **and** a structured Pinecone metadata filter in one LLM call — no manual JSON parsing or separate rephrase step
+- **Self-Querying Retriever (SQR)** — Single component that decomposes a natural language query into a semantic search string **and** a structured Pinecone metadata filter in one LLM call — no manual JSON parsing or separate rephrase step
 - **Metadata Filtering** — Filters on `categoryName`, `salePrice`, `customerRating`, and `isOnSale` are built automatically by SQR and applied natively in Pinecone
 - **User Management** — MongoDB-based user profiles (name, email, phone) used in responses and actions
 - **Account Information Display** — Users can ask to see their account details (name, email, phone)
@@ -44,7 +19,7 @@ A production-ready AI-powered chatbot that recommends BestBuy Canada products ba
 - **Optimistic UI** — "Alright [Name], let me help you with that. Give me a second! ⏳" shown instantly while the API responds
 - **Category Registry** — All unique `categoryName` values are extracted at load time and saved for filter prompting
 - **Web Search Integration** — Tavily-powered web search for general questions
-- **LangSmith Tracing** — Full observability of every chain execution
+- **LangSmith Tracing** — Full observability of every graph execution
 - **Modern UI** — Responsive React + Tailwind CSS interface
 
 ---
@@ -55,7 +30,8 @@ A production-ready AI-powered chatbot that recommends BestBuy Canada products ba
 | Technology | Role |
 |---|---|
 | FastAPI (Python 3.11+) | REST API framework |
-| LangChain | Tool-calling agent with 6 tools, SelfQueryingRetriever |
+| LangGraph | StateGraph ReAct agent, ToolNode, graph compilation |
+| LangChain Core | BaseTool, message types, SelfQueryingRetriever |
 | Ollama (`gpt-oss:20b` + `mxbai-embed-large`) | Local LLM inference & embeddings |
 | Pinecone | Vector database with metadata filtering |
 | MongoDB | User profile & purchase history storage |
@@ -90,36 +66,38 @@ A production-ready AI-powered chatbot that recommends BestBuy Canada products ba
 │  - Automatic CTA banner for products       │
 └────────────────────┬────────────────────────┘
                      │ POST /api/v1/chat
-                     │ { query, last_product_ids }
+                     │ { query, conversation_id }
                      ▼
 ┌─────────────────────────────────────────────┐
 │              FastAPI Backend                │
 │                                             │
-│  ┌─────────────────────────────────────┐   │
-│  │    LangChain Tool-Calling Agent     │   │
-│  │                                     │   │
-│  │  Agent analyzes query and calls:    │   │
-│  │                                     │   │
-│  │  Tool 1: search_products            │   │
-│  │    → SelfQueryingRetriever          │   │
-│  │    → Pinecone search with filters   │   │
-│  │                                     │   │
-│  │  Tool 2: send_product_email         │   │
-│  │    → Email service                  │   │
-│  │                                     │   │
-│  │  Tool 3: purchase_product           │   │
-│  │    → Purchase simulation            │   │
-│  │                                     │   │
-│  │  Tool 4: search_web                 │   │
-│  │    → Tavily API                     │   │
-│  │                                     │   │
-│  │  Tool 5: get_user_info 🆕           │   │
-│  │    → Returns user account details   │   │
-│  │                                     │   │
-│  │  Tool 6: get_purchase_history 🆕    │   │
-│  │    → MongoDB query for orders       │   │
-│  │                                     │   │
-│  └─────────────────────────────────────┘  │
+│  ChatbotService.process_chat_interaction()  │
+│    │                                        │
+│    ▼  graph/builder.py                      │
+│  ┌──────────────────────────────────────┐   │
+│  │   LangGraph StateGraph (ReAct loop)  │   │
+│  │                                      │   │
+│  │  ┌──────────┐   tool_calls?          │   │
+│  │  │  agent   │──── yes ──────────┐    │   │
+│  │  │  node    │                   ▼    │   │
+│  │  │ (ChatOl- │            ┌──────────┐│   │
+│  │  │  lama)   │◄── loop ───│ ToolNode ││   │
+│  │  └────┬─────┘            │ (6 tools)││   │
+│  │       │ no tool_calls    └──────────┘│   │
+│  │       ▼                              │   │
+│  │  ┌────────────────┐                  │   │
+│  │  │ process_results│                  │   │
+│  │  │     node       │                  │   │
+│  │  └────────────────┘                  │   │
+│  └──────────────────────────────────────┘   │
+│                                             │
+│  ToolNode dispatches to:                    │
+│    search_products    → SQR → Pinecone      │
+│    send_product_email → Email service       │
+│    purchase_product   → Order simulation    │
+│    get_user_info      → User context        │
+│    get_purchase_history → MongoDB           │
+│    search_web         → Tavily API          │
 └─────────────────────────────────────────────┘
         │            │            │
         ▼            ▼            ▼
@@ -130,95 +108,105 @@ A production-ready AI-powered chatbot that recommends BestBuy Canada products ba
    └─────────┘  └────────┘
 ```
 
+### LangGraph Package Structure
+
+```
+app/graph/
+├── __init__.py       # Exports AgentState, build_chatbot_graph, nodes
+├── state.py          # AgentState TypedDict (add_messages reducer)
+├── nodes.py          # agent_node(), process_results_node(), should_continue()
+└── builder.py        # build_chatbot_graph() — wires StateGraph + ToolNode + edges
+```
+
 ---
 
 ## 🔄 Workflow Details
 
-### Chat Flow (Agent-Based)
+### LangGraph State Machine
+
+All requests flow through the same `StateGraph`. There is no separate intent detection step — the agent LLM selects tools automatically:
+
+```
+__start__
+    │
+    ▼
+agent_node          ← LLM call (ChatOllama + bound tools)
+    │
+    ├── tool_calls present? ──► ToolNode ──► (loop back to agent_node)
+    │
+    └── no tool_calls ──────► process_results_node ──► __end__
+```
+
+### Chat Flow (Product Search)
 
 ```
 User types: "show me laptops under $1500 that are on sale"
                 │
                 ▼
-Agent Execution
-  ├─ Analyzes query with LLM
-  ├─ Selects appropriate tool: search_products
-  │
-  ▼
-Tool: search_products
+agent_node: LLM selects tool → search_products(query=...)
+                │
+                ▼
+ToolNode dispatches → search_products tool
   ├─ SelfQueryingRetriever (single LLM call)
-  │  ├─ LLM decomposes query into:
+  │  ├─ Decomposes query into:
   │  │    semantic string: "laptop sale discount under 1500"
-  │  │    filter: {
-  │  │      "categoryName": { "$eq": "Laptops" },
-  │  │      "salePrice":    { "$lte": 1500 },
-  │  │      "isOnSale":     { "$eq": true }
-  │  │    }
+  │  │    filter: { categoryName: "Laptops", salePrice: ≤1500, isOnSale: true }
   │  └─ Pinecone similarity search with filter
-  │
-  ├─ Stores products in AgentState
-  └─ Returns formatted product list to agent
+  └─ Returns formatted product list text
                 │
                 ▼
-Agent generates friendly response
+agent_node: LLM has no more tool_calls → generates response
                 │
                 ▼
-Return to frontend
-{ message, products[], source: "vector_db" }
+process_results_node: extracts products from ToolMessage (no second Pinecone call)
+                │
+                ▼
+Return to frontend: { message, products[], source: "vector_db" }
                 │
                 ▼
 UI displays products + automatic CTA banner
 ```
 
-### User Account Info Flow (New)
+### User Account Info Flow
 
 ```
 User types: "show my account info"
                 │
                 ▼
-Agent Execution
-  ├─ Analyzes query with LLM
-  ├─ Selects appropriate tool: get_user_info
-  │
-  ▼
-Tool: get_user_info
-  ├─ Retrieves user info from injected context
-  ├─ Stores user_info in AgentState
-  └─ Returns formatted account details
+agent_node: LLM selects → get_user_info()
                 │
                 ▼
-Agent generates friendly response
+ToolNode → get_user_info tool (reads injected user context)
                 │
                 ▼
-Return to frontend
-{ message, user_info: {name, email, phone}, source: "user_info" }
+agent_node: generates response, no more tools
                 │
                 ▼
-UI displays user info card with gradient design
+process_results_node: source = "user_info"
+                │
+                ▼
+Return: { message, source: "user_info" }
 ```
 
-### Purchase History Flow (New)
+### Purchase History Flow
 
 ```
 User types: "show my purchase history"
                 │
                 ▼
-Agent Execution
-  ├─ Analyzes query with LLM
-  ├─ Selects appropriate tool: get_purchase_history
-  │
-  ▼
-Tool: get_purchase_history
-  ├─ Queries MongoDB: get_user_orders(user_id)
-  ├─ Stores purchase_history in AgentState
-  └─ Returns formatted order summary
+agent_node: LLM selects → get_purchase_history()
                 │
                 ▼
-Agent generates friendly response
+ToolNode → get_purchase_history tool → MongoDB: get_user_orders(user_id)
                 │
                 ▼
-Return to frontend
-{ message, purchase_history: [orders...], source: "purchase_history" }
+agent_node: generates response, no more tools
+                │
+                ▼
+process_results_node: source = "purchase_history"
+                │
+                ▼
+Return: { message, source: "purchase_history" }
                 │
                 ▼
 UI displays collapsible order cards
@@ -229,72 +217,76 @@ UI displays collapsible order cards
 When a user types something like *"email me the MacBook"* or *"I'll take it"*:
 
 ```
-User message + last_product_ids (from frontend state)
+User message (product SKU resolved from conversation history)
                 │
                 ▼
-Agent Execution
-  ├─ Analyzes query with LLM
-  ├─ Determines action needed (email or purchase)
-  ├─ Identifies product from context
-  │
-  ▼
-Tool: send_product_email OR purchase_product
-  ├─ Retrieves product from Pinecone by SKU
+agent_node: LLM selects → send_product_email(product_id=...) or purchase_product(product_id=...)
+                │
+                ▼
+ToolNode → email / purchase tool
+  ├─ Fetches product from Pinecone by SKU
   ├─ Executes action (send email or simulate purchase)
-  ├─ Stores result in AgentState
-  └─ Returns confirmation message
+  └─ Returns confirmation text
                 │
                 ▼
-Agent generates confirmation response
+agent_node: generates confirmation, no more tools
                 │
                 ▼
-Return to frontend
-{ message: "Done! Sent to kai@...", source: "action" }
+process_results_node: source = "action"
+                │
+                ▼
+Return: { message: "Done! Sent to kai@...", source: "action" }
 ```
 
 ---
 
 ## 🛠️ Agent Tools
 
-The chatbot uses a LangChain tool-calling agent with 6 tools. The LLM automatically selects the appropriate tool(s) based on the user's query:
+The chatbot uses a LangGraph `ToolNode` that dispatches to 6 `BaseTool` instances. The agent LLM automatically selects the appropriate tool(s) based on the user's query. Tool factories return `BaseTool` (via the `@tool` decorator) and receive all user-specific context via dependency injection (no global state mutation).
 
-### 1. **search_products**
+### 1. **search_products** (`app/tools/search_tool.py`)
 - **Purpose:** Search the product catalog
 - **When Used:** Product searches, recommendations, availability questions
 - **Implementation:** SelfQueryingRetriever with Pinecone vector search
+- **Returns:** `BaseTool` (formatted text; products extracted by `process_results_node`)
 - **Example:** "Show me gaming laptops under $2000"
 
-### 2. **send_product_email**
+### 2. **send_product_email** (`app/tools/email_tool.py`)
 - **Purpose:** Email product details to the user
 - **When Used:** "Email me the details", "Send that to my email"
 - **Implementation:** SMTP email service with product template
+- **Returns:** `BaseTool` (confirmation text)
 - **Example:** "Can you email me the MacBook details?"
 
-### 3. **purchase_product**
+### 3. **purchase_product** (`app/tools/purchase_tool.py`)
 - **Purpose:** Simulate placing an order
 - **When Used:** "I'll take it", "Purchase the laptop", "Buy now"
 - **Implementation:** Order simulation with confirmation
+- **Returns:** `BaseTool` (order confirmation text)
 - **Example:** "I want to buy the Sony headphones"
 
-### 4. **search_web**
+### 4. **search_web** (`app/tools/web_search_tool.py`)
 - **Purpose:** Search the web for general information
 - **When Used:** Questions not related to product search
 - **Implementation:** Tavily API for web search
+- **Returns:** `BaseTool` (formatted search results text)
 - **Example:** "What's the difference between OLED and QLED?"
 
-### 5. **get_user_info** (New)
+### 5. **get_user_info** (`app/tools/user_info_tool.py`)
 - **Purpose:** Display user account information
 - **When Used:** "Show my account info", "What's my email?"
-- **Implementation:** Returns user profile from context
+- **Implementation:** Returns user profile from injected context (no DB call)
+- **Returns:** `BaseTool` (formatted account text)
 - **Example:** "Can you show my account details?"
 
-### 6. **get_purchase_history** (New)
+### 6. **get_purchase_history** (`app/tools/purchase_history_tool.py`)
 - **Purpose:** Display user's past orders
 - **When Used:** "Show my purchase history", "What have I ordered?"
-- **Implementation:** MongoDB query filtered by userId
+- **Implementation:** MongoDB query filtered by `userId`
+- **Returns:** `BaseTool` (formatted order summary text)
 - **Example:** "Display my order history"
 
-The agent intelligently routes queries to the appropriate tool(s) and can call multiple tools in sequence if needed.
+All tool factories (`create_*_tool`) accept injected dependencies (user context, services) and return a `BaseTool`. The `ToolNode` in `graph/builder.py` handles dispatch automatically.
 
 ---
 
@@ -328,7 +320,7 @@ The loader transforms each product to:
 - Store `text = name + " " + shortDescription` as the Pinecone embedding text
 - Store all fields as Pinecone metadata for filtering
 
-### Purchase History (New)
+### Purchase History
 
 Purchase history is loaded from JSON files with the structure:
 
@@ -394,7 +386,7 @@ The application uses two MongoDB collections:
 - **Indexes:** userId (unique), email
 - **Purpose:** User profiles for personalization and actions
 
-**purchase_orders** (New)
+**purchase_orders**
 ```json
 {
   "userId": "user_001",
@@ -461,16 +453,20 @@ The application uses two MongoDB collections:
   ],
   "conversation_id": "conv_abc123",
   "has_results": true,
-  "source": "vector_db",
-  "user_info": null,
-  "purchase_history": []
+  "source": "vector_db"
 }
 ```
 
-**New Response Fields:**
-- `user_info`: User account details when displaying profile (firstName, lastName, email, phone)
-- `purchase_history`: Array of orders when displaying order history
-- `source`: Now includes "user_info" and "purchase_history" values
+**`source` values:**
+| Value | Meaning |
+|---|---|
+| `vector_db` | Products returned from Pinecone search |
+| `action` | Email sent or purchase placed |
+| `user_info` | User account details displayed |
+| `purchase_history` | Order history displayed |
+| `general_chat` | Conversational response (no tools called) |
+| `general_chat_with_search` | Response used Tavily web search |
+| `none` | Search returned no results |
 
 ---
 
@@ -535,7 +531,7 @@ docker exec -it product_chatbot_backend python -m scripts.init_db
 # Load products into Pinecone + save categories.json
 docker exec -it product_chatbot_backend python -m scripts.load_products
 
-# Load purchase history into MongoDB (new)
+# Load purchase history into MongoDB
 docker exec -it product_chatbot_backend python -m scripts.load_purchase_history --clear
 ```
 
@@ -550,7 +546,7 @@ docker exec -it product_chatbot_backend python -m scripts.load_purchase_history 
 3. Save unique `categoryName` values to `data/categories.json`
 4. Upsert all products into Pinecone with full metadata
 
-`load_purchase_history.py` (new):
+`load_purchase_history.py`:
 1. Parse purchase history JSON files for each user
 2. Filter out environmental fees (items with `parentSku`)
 3. Recalculate order totals
@@ -615,52 +611,54 @@ docker exec -it product_chatbot_backend python -m scripts.load_purchase_history 
 product-recommendation-chatbot/
 ├── backend/
 │   ├── app/
+│   │   ├── graph/
+│   │   │   ├── __init__.py               # Exports AgentState, build_chatbot_graph, nodes
+│   │   │   ├── state.py                  # AgentState TypedDict (add_messages reducer)
+│   │   │   ├── nodes.py                  # agent_node(), process_results_node(), should_continue()
+│   │   │   └── builder.py                # build_chatbot_graph() — StateGraph + ToolNode wiring
 │   │   ├── models/
-│   │   │   ├── product.py          # ProductBase (BestBuy fields), ProductDocument
-│   │   │   ├── request.py          # ChatRequest, ChatResponse (+ user_info, purchase_history)
-│   │   │   ├── state.py            # AgentState (+ user_info, purchase_history fields)
-│   │   │   ├── user.py             # UserInDB (name, email, phone)
-│   │   │   └── order.py 🆕         # OrderInDB, LineItem models
+│   │   │   ├── product.py                # ProductBase (BestBuy fields), ProductDocument
+│   │   │   ├── request.py                # ChatRequest, ChatResponse, ActionRequest, ActionResponse
+│   │   │   ├── user.py                   # UserInDB (name, email, phone)
+│   │   │   └── order.py                  # OrderInDB, LineItem models
 │   │   ├── database/
-│   │   │   ├── mongodb.py          # User & order CRUD, indexes
-│   │   │   └── pinecone_db.py      # build_sqr() factory, add_products, get_product_by_id
+│   │   │   ├── mongodb.py                # User & order CRUD, indexes
+│   │   │   └── pinecone_db.py            # build_sqr() factory, add_products, get_product_by_id
 │   │   ├── services/
-│   │   │   ├── chatbot_service.py  # Tool-calling agent with 6 tools
-│   │   │   ├── data_loader.py      # BestBuy format support + category extraction
+│   │   │   ├── chatbot_service.py        # Orchestration only (~290 lines): LLM, SQR, tools, graph invoke
+│   │   │   ├── data_loader.py            # BestBuy format support + category extraction
 │   │   │   ├── email_service.py
 │   │   │   ├── user_service.py
-│   │   │   └── tavily_service.py   # Web search
+│   │   │   └── tavily_service.py         # Web search
 │   │   ├── tools/
-│   │   │   ├── search_tool.py      # search_products tool
-│   │   │   ├── email_tool.py       # send_product_email tool
-│   │   │   ├── purchase_tool.py    # purchase_product tool
-│   │   │   ├── web_search_tool.py  # search_web tool (Tavily)
-│   │   │   ├── user_info_tool.py 🆕 # get_user_info tool
-│   │   │   └── purchase_history_tool.py 🆕 # get_purchase_history tool
+│   │   │   ├── search_tool.py            # create_search_products_tool() → BaseTool
+│   │   │   ├── email_tool.py             # create_email_tool() → BaseTool
+│   │   │   ├── purchase_tool.py          # create_purchase_tool() → BaseTool
+│   │   │   ├── web_search_tool.py        # search_web BaseTool (Tavily)
+│   │   │   ├── user_info_tool.py         # create_user_info_tool() → BaseTool
+│   │   │   └── purchase_history_tool.py  # create_purchase_history_tool() → BaseTool
 │   │   ├── api/
-│   │   │   └── routes.py           # /chat passes user_info & purchase_history
-│   │   └── config.py               # Settings with mongodb_purchase_orders_collection
+│   │   │   └── routes.py                 # /chat, /actions, /users endpoints
+│   │   └── config.py                     # Settings with all env var mappings
 │   ├── data/
-│   │   ├── products/               # BestBuy JSON files (laptops.json, headphones.json)
-│   │   ├── categories.json         # Auto-generated by load_products.py
-│   │   ├── purchase_history.json   # Order history for user_001
-│   │   ├── purchase_history_user_002.json 🆕 # Order history for user_002
-│   │   └── purchase_history_user_003.json 🆕 # Order history for user_003
+│   │   ├── products/                     # BestBuy JSON files
+│   │   ├── categories.json               # Auto-generated by load_products.py
+│   │   └── purchase_history/             # Order JSON files per user
 │   └── scripts/
-│       ├── init_db.py              # Create sample users
-│       ├── load_products.py        # Load products + save categories.json
-│       └── load_purchase_history.py 🆕 # Load purchase history into MongoDB
+│       ├── init_db.py                    # Create sample users
+│       ├── load_products.py              # Load products + save categories.json
+│       └── load_purchase_history.py      # Load purchase history into MongoDB
 ├── frontend/
 │   └── src/
 │       ├── components/
-│       │   ├── ChatInterface.jsx   # Main UI with user selector
-│       │   ├── MessageList.jsx     # Renders messages, products, user info, orders
+│       │   ├── ChatInterface.jsx         # Main UI with user selector
+│       │   ├── MessageList.jsx           # Renders messages, products, user info, orders
 │       │   ├── InputBox.jsx
 │       │   └── ProductCard.jsx
 │       ├── hooks/
-│       │   └── useChat.js          # Optimistic message, handles userInfo & purchaseHistory
+│       │   └── useChat.js                # Optimistic message, handles source routing
 │       └── services/
-│           └── api.js              # sendMessage includes last_product_ids
+│           └── api.js                    # sendMessage API client
 ├── docker-compose.yml
 └── README.md
 ```
@@ -669,49 +667,52 @@ product-recommendation-chatbot/
 
 ## 🔍 LangSmith Tracing
 
-Every chain execution is automatically traced. View at https://smith.langchain.com.
+Every LangGraph graph execution is automatically traced. View at https://smith.langchain.com.
 
 **Trace structure examples:**
 ```
 User query: "show me my account info"
-├─ Agent execution                                                          (1.2s)
-│  ├─ LLM analyzes query                                                    (0.8s)
-│  └─ Tool call: get_user_info                                              (0.1s)
-│     └─ Returns user account details
-└─ Agent generates response                                                 (0.3s)
+├─ LangGraph: StateGraph                                                    (1.2s)
+│  ├─ agent_node: LLM call                                                  (0.8s)
+│  │  └─ tool_call: get_user_info                                           (0.0s)
+│  ├─ ToolNode: get_user_info                                               (0.1s)
+│  ├─ agent_node: LLM call (final response)                                 (0.3s)
+│  └─ process_results_node                                                  (0.0s)
 
 ─────────────────────────────────────────────────────────────────────────────
 User query: "show my purchase history"
-├─ Agent execution                                                          (1.5s)
-│  ├─ LLM analyzes query                                                    (0.7s)
-│  └─ Tool call: get_purchase_history                                       (0.5s)
-│     └─ MongoDB query: get_user_orders()                                   (0.4s)
-│     └─ Returns 5 orders
-└─ Agent generates response                                                 (0.3s)
+├─ LangGraph: StateGraph                                                    (1.5s)
+│  ├─ agent_node: LLM call                                                  (0.7s)
+│  │  └─ tool_call: get_purchase_history                                    (0.0s)
+│  ├─ ToolNode: get_purchase_history → MongoDB query                        (0.5s)
+│  ├─ agent_node: LLM call (final response)                                 (0.3s)
+│  └─ process_results_node                                                  (0.0s)
 
 ─────────────────────────────────────────────────────────────────────────────
 User query: "laptops on sale under $2000"
-├─ Agent execution                                                          (2.8s)
-│  ├─ LLM analyzes query                                                    (0.8s)
-│  └─ Tool call: search_products                                            (1.7s)
-│     └─ SelfQueryingRetriever
-│        ├─ LLM decomposes query                                            (1.1s)
-│        │  ├─ semantic string: "laptop sale discount"
-│        │  └─ filter: { categoryName: "Laptops", salePrice: ≤2000, isOnSale: true }
-│        └─ Pinecone search                                                 (0.6s)
-│           └─ Returns 4 products
-└─ Agent generates response                                                 (0.3s)
+├─ LangGraph: StateGraph                                                    (2.8s)
+│  ├─ agent_node: LLM call                                                  (0.8s)
+│  │  └─ tool_call: search_products(query="laptops on sale under 2000")
+│  ├─ ToolNode: search_products                                             (1.7s)
+│  │  └─ SelfQueryingRetriever
+│  │     ├─ LLM decomposes query                                            (1.1s)
+│  │     │  ├─ semantic: "laptop sale discount"
+│  │     │  └─ filter: { categoryName: "Laptops", salePrice: ≤2000, isOnSale: true }
+│  │     └─ Pinecone search → 4 products                                   (0.6s)
+│  ├─ agent_node: LLM call (final response)                                 (0.3s)
+│  └─ process_results_node (uses cached ToolMessage, no second Pinecone call)
 
 ─────────────────────────────────────────────────────────────────────────────
 User query: "email me the MacBook"
-├─ Agent execution                                                          (1.5s)
-│  ├─ LLM analyzes query                                                    (0.8s)
-│  └─ Tool call: send_product_email                                         (0.4s)
-│     └─ Email sent to kai@example.com
-└─ Agent generates confirmation                                             (0.3s)
+├─ LangGraph: StateGraph                                                    (1.5s)
+│  ├─ agent_node: LLM call                                                  (0.8s)
+│  │  └─ tool_call: send_product_email(product_id="...")
+│  ├─ ToolNode: send_product_email → email sent                             (0.4s)
+│  ├─ agent_node: LLM call (confirmation)                                   (0.3s)
+│  └─ process_results_node: source = "action"
 ```
 
-All tool calls, LLM interactions, and data flows are visible in LangSmith for debugging and optimization.
+All tool calls, LLM interactions, and graph node transitions are visible in LangSmith for debugging and optimization.
 
 ---
 
@@ -741,9 +742,9 @@ All tool calls, LLM interactions, and data flows are visible in LangSmith for de
 - Script automatically filters items where `parentSku` is not null
 
 **Agent not calling the right tool:**
-- Check LangSmith trace to see which tool was selected
+- Check LangSmith trace to see which tool was selected by `agent_node`
 - Verify the query clearly indicates the desired action
-- The agent uses the LLM to intelligently route requests
+- The LangGraph agent uses the LLM to route requests via tool selection — no hard-coded intent detection
 
 **Email not sending:**
 - Verify SMTP credentials in `.env`
@@ -838,7 +839,7 @@ curl http://localhost:8000/api/v1/health
 open http://localhost:8000/docs
 ```
 
-### New Feature Testing Queries
+### Example Queries
 ```
 "Show my account info"
 "What's my email address?"
@@ -851,12 +852,10 @@ open http://localhost:8000/docs
 
 ## 📚 Additional Documentation
 
-- **[QUICKSTART.md](QUICKSTART.md)** - Quick setup guide
-- **[SETUP_LOCAL_OLLAMA.md](SETUP_LOCAL_OLLAMA.md)** - Ollama configuration
-- **[LANGCHAIN_IMPLEMENTATION.md](LANGCHAIN_IMPLEMENTATION.md)** - LangChain architecture details
-- **[LANGSMITH_GUIDE.md](LANGSMITH_GUIDE.md)** - LangSmith tracing setup
-- **[NEW_FEATURES_SUMMARY.md](NEW_FEATURES_SUMMARY.md)** - User info & purchase history features
-- **[TESTING_GUIDE_NEW_FEATURES.md](TESTING_GUIDE_NEW_FEATURES.md)** - Test scenarios for new features
+- **[QUICKSTART.md](QUICKSTART.md)** — Quick setup guide
+- **[SETUP_LOCAL_OLLAMA.md](SETUP_LOCAL_OLLAMA.md)** — Ollama configuration
+- **[LANGGRAPH_IMPLEMENTATION.md](LANGGRAPH_IMPLEMENTATION.md)** — LangGraph architecture details & design decisions
+- **[LANGSMITH_GUIDE.md](LANGSMITH_GUIDE.md)** — LangSmith tracing setup
 
 ---
 

@@ -1,27 +1,28 @@
-"""Search products tool for the chatbot agent."""
+"""Search products tool for the chatbot agent.
 
+Returns formatted text followed by an embedded JSON block so that
+``process_results_node`` can reconstruct the full ``Product`` list from the
+``ToolMessage`` without issuing a second Pinecone query — even when the tool
+is called multiple times in one turn (e.g. "show me monitors and wearables").
+"""
+
+import json
 import logging
 from typing import Callable
 
-from langchain_core.tools import tool
-
-from app.models.state import AgentState
+from langchain_core.tools import BaseTool, tool
 
 logger = logging.getLogger(__name__)
 
 
-def create_search_products_tool(
-    run_sqr: Callable,
-    state: AgentState,
-) -> Callable:
-    """Create a search_products tool with injected dependencies.
+def create_search_products_tool(run_sqr: Callable) -> BaseTool:
+    """Create a search_products tool with injected SQR dependency.
 
     Args:
         run_sqr: Async function to run the SelfQueryingRetriever
-        state: Shared AgentState to store products for API response
 
     Returns:
-        A LangChain tool function
+        A LangGraph-compatible BaseTool
     """
 
     @tool
@@ -41,18 +42,13 @@ def create_search_products_tool(
             query: Natural language search query describing what the user wants
 
         Returns:
-            Formatted list of matching products with names, prices, and ratings
+            Formatted list of matching products with names, prices, and ratings,
+            followed by an embedded JSON block for structured processing.
         """
         try:
             logger.info("search_products tool called with query: %s", query)
 
-            # Run the SelfQueryingRetriever
             products = await run_sqr(query)
-
-            # Append products to shared state for API response (accumulate across multiple searches)
-            state.products.extend(products)
-            state.source = "vector_db" if products else "none"
-            state.has_results = bool(products)
 
             if not products:
                 return "No products found matching your search. Try different keywords or browse our categories."
@@ -70,15 +66,19 @@ def create_search_products_tool(
                     f"   {p.shortDescription[:150]}..."
                 )
 
-            result = f"Found {len(products)} products:\n\n" + "\n\n".join(lines)
-            logger.info("search_products returning %d products", len(products))
-            return result
+            human_text = f"Found {len(products)} products:\n\n" + "\n\n".join(lines)
+
+            # Embed serialised Product list so process_results_node can
+            # reconstruct Product objects for the API response without a
+            # second Pinecone call.  The LLM ignores the JSON block.
+            product_dicts = [p.model_dump() for p in products[:5]]
+            json_block = f"\n```json\n{json.dumps(product_dicts)}\n```"
+
+            logger.info("search_products returning %d products for query: %s", len(products), query)
+            return human_text + json_block
 
         except Exception as e:
             logger.error("search_products tool failed: %s", e)
-            state.products = []
-            state.source = "none"
-            state.has_results = False
             return f"Search failed: {str(e)}. Please try again."
 
     return search_products

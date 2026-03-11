@@ -1,115 +1,173 @@
-import React from 'react';
-import { Package, Calendar, DollarSign } from 'lucide-react';
+import React, { useState } from 'react';
+import {
+  Package, Calendar, ChevronDown, ChevronUp,
+  ShoppingBag, Truck, CheckCircle2, Clock, Receipt,
+} from 'lucide-react';
 
-const PurchaseHistoryList = ({ orders }) => {
-  if (!orders || orders.length === 0) {
-    return null;
-  }
+/* ── Helpers ──────────────────────────────────────────────────────────────── */
 
-  // Format date to readable string
-  const formatDate = (dateString) => {
-    const date = new Date(dateString);
-    return date.toLocaleDateString('en-US', {
-      year: 'numeric',
-      month: 'long',
-      day: 'numeric',
-    });
-  };
+const formatDate = (dateString) => {
+  const date = new Date(dateString);
+  return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+};
+
+const STATUS_CONFIG = {
+  InProcess: { label: 'In Process', icon: Clock,        bg: 'bg-blue-50',   text: 'text-blue-700',   border: 'border-blue-200',   dot: 'bg-blue-500'   },
+  Shipped:   { label: 'Shipped',    icon: Truck,         bg: 'bg-purple-50', text: 'text-purple-700', border: 'border-purple-200', dot: 'bg-purple-500' },
+  Delivered: { label: 'Delivered',  icon: CheckCircle2,  bg: 'bg-green-50',  text: 'text-green-700',  border: 'border-green-200',  dot: 'bg-green-500'  },
+  default:   { label: 'Processing', icon: Clock,         bg: 'bg-gray-50',   text: 'text-gray-600',   border: 'border-gray-200',   dot: 'bg-gray-400'   },
+};
+
+const StatusBadge = ({ status }) => {
+  const cfg = STATUS_CONFIG[status] || STATUS_CONFIG.default;
+  const Icon = cfg.icon;
+  return (
+    <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-semibold border ${cfg.bg} ${cfg.text} ${cfg.border}`}>
+      <span className={`w-1.5 h-1.5 rounded-full ${cfg.dot}`} />
+      <Icon className="w-3 h-3" />
+      {cfg.label}
+    </span>
+  );
+};
+
+/* ── Order Card ───────────────────────────────────────────────────────────── */
+
+const OrderCard = ({ order, index }) => {
+  const [expanded, setExpanded] = useState(index === 0); // first order open by default
+
+  const visibleItems = order.lineItems.filter(
+    (item) => !item.name.toLowerCase().includes('environmental handling fee')
+  );
+
+  const itemCount = visibleItems.length;
 
   return (
-    <div className="mt-3 space-y-4">
-      <div className="text-sm text-gray-600 font-medium mb-3">
-        {orders.length} {orders.length === 1 ? 'order' : 'orders'} found
-      </div>
+    <div className="rounded-xl border border-gray-200 bg-white shadow-sm hover:shadow-md transition-shadow duration-200 overflow-hidden">
 
-      {orders.map((order) => (
-        <div
-          key={order.orderNumber}
-          className="border border-gray-200 rounded-lg bg-white shadow-sm hover:shadow-md transition-shadow"
-        >
-          {/* Order Header */}
-          <div className="px-4 py-3 border-b border-gray-200 bg-gray-50 rounded-t-lg">
-            <div className="flex justify-between items-start">
-              <div className="flex items-center gap-2 text-sm text-gray-700">
-                <Calendar className="w-4 h-4 text-gray-500" />
-                <span className="font-medium">{formatDate(order.orderDate)}</span>
-              </div>
-              <div className="text-right">
-                <div className="text-sm text-gray-600">
-                  ({order.lineItems.length} {order.lineItems.length === 1 ? 'item' : 'items'})
-                </div>
-                <div className="text-base font-semibold text-gray-900">
-                  ${order.totalPrice.toFixed(2)}
-                </div>
-              </div>
-            </div>
+      {/* ── Order header (always visible) ─────────────────────────────── */}
+      <button
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full text-left px-4 py-3.5 flex items-center gap-3 hover:bg-blue-50 transition-colors"
+      >
+        {/* Order icon */}
+        <div className="w-10 h-10 rounded-full bg-blue-50 flex items-center justify-center flex-shrink-0">
+          <ShoppingBag className="w-5 h-5 text-blue-600" />
+        </div>
+
+        {/* Order meta */}
+        <div className="flex-1 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="text-xs font-mono text-gray-500">#{order.orderNumber}</span>
+            <StatusBadge status={order.status} />
           </div>
+          <div className="flex items-center gap-1.5 mt-0.5 text-xs text-gray-500">
+            <Calendar className="w-3 h-3" />
+            {formatDate(order.orderDate)}
+            <span className="text-gray-300">·</span>
+            <Package className="w-3 h-3" />
+            {itemCount} {itemCount === 1 ? 'item' : 'items'}
+          </div>
+        </div>
 
-          {/* Line Items */}
-          <div className="divide-y divide-gray-100">
-            {order.lineItems
-              .filter((item) => !item.name.toLowerCase().includes('environmental handling fee'))
-              .map((item, index) => (
-                <div key={`${item.sku}-${index}`} className="px-4 py-3 flex gap-3 hover:bg-gray-50 transition-colors">
-                  {/* Product Image */}
-                  <div className="flex-shrink-0">
+        {/* Total + chevron */}
+        <div className="flex items-center gap-3 flex-shrink-0">
+          <div className="text-right">
+            <p className="text-xs text-gray-400">Total</p>
+            <p className="text-base font-bold text-gray-900">${order.totalPrice.toFixed(2)}</p>
+          </div>
+          {expanded
+            ? <ChevronUp className="w-4 h-4 text-blue-400" />
+            : <ChevronDown className="w-4 h-4 text-blue-400" />}
+        </div>
+      </button>
+
+      {/* ── Expandable line items ──────────────────────────────────────── */}
+      {expanded && (
+        <div className="border-t border-blue-100">
+          <div className="divide-y divide-blue-50">
+            {visibleItems.map((item, idx) => (
+              <div key={`${item.sku}-${idx}`} className="flex gap-3 px-4 py-3 hover:bg-blue-50 transition-colors">
+
+                {/* Product image */}
+                <div className="flex-shrink-0 w-16 h-16 rounded-lg border border-blue-100 bg-blue-50 overflow-hidden flex items-center justify-center">
+                  {item.imgUrl ? (
                     <img
                       src={item.imgUrl.replace('//', 'https://')}
                       alt={item.name}
-                      className="w-20 h-20 object-contain rounded border border-gray-200"
+                      className="w-full h-full object-contain p-1"
                       onError={(e) => {
-                        e.target.src = 'https://via.placeholder.com/80?text=No+Image';
+                        e.target.style.display = 'none';
+                        e.target.parentElement.innerHTML = '<span class="text-2xl">📦</span>';
                       }}
                     />
-                  </div>
+                  ) : (
+                    <span className="text-2xl">📦</span>
+                  )}
+                </div>
 
-                  {/* Product Info */}
-                  <div className="flex-1 min-w-0">
-                    <h4 className="text-sm font-medium text-gray-900 line-clamp-2 mb-1">
-                      {item.name}
-                    </h4>
-                    <div className="flex items-center gap-4 text-xs text-gray-600">
-                      <span>Quantity: {item.quantity}</span>
-                      <span className="flex items-center gap-1">
-                        <DollarSign className="w-3 h-3" />
-                        {item.total.toFixed(2)}
-                      </span>
-                    </div>
+                {/* Product details */}
+                <div className="flex-1 min-w-0 flex flex-col justify-center">
+                  <p className="text-sm font-medium text-gray-900 line-clamp-2 leading-snug mb-1">
+                    {item.name}
+                  </p>
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-gray-500">Qty: <span className="font-semibold text-gray-700">{item.quantity}</span></span>
+                    <span className="text-xs font-bold text-blue-600">${item.total.toFixed(2)}</span>
                   </div>
                 </div>
-              ))}
+              </div>
+            ))}
           </div>
 
-          {/* Order Footer */}
-          <div className="px-4 py-3 bg-gray-50 rounded-b-lg border-t border-gray-200">
-            <div className="flex justify-between items-center">
-              <div className="flex items-center gap-2">
-                <Package className="w-4 h-4 text-gray-500" />
-                <div>
-                  <div className="text-xs text-gray-500">Order Number</div>
-                  <div className="text-sm font-mono font-medium text-gray-900">
-                    {order.orderNumber}
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <span
-                  className={`px-2 py-1 text-xs font-medium rounded ${
-                    order.status === 'InProcess'
-                      ? 'bg-blue-100 text-blue-700'
-                      : order.status === 'Delivered'
-                      ? 'bg-green-100 text-green-700'
-                      : order.status === 'Shipped'
-                      ? 'bg-purple-100 text-purple-700'
-                      : 'bg-gray-100 text-gray-700'
-                  }`}
-                >
-                  {order.status}
-                </span>
-              </div>
+          {/* Order total footer */}
+          <div className="px-4 py-3 bg-blue-50 border-t border-blue-100 flex items-center justify-between">
+            <div className="flex items-center gap-2 text-xs text-gray-500">
+              <Receipt className="w-3.5 h-3.5" />
+              <span>{itemCount} {itemCount === 1 ? 'item' : 'items'} · Order #{order.orderNumber}</span>
+            </div>
+            <div className="text-sm font-bold text-gray-900">
+              Total: <span className="text-blue-600">${order.totalPrice.toFixed(2)} CAD</span>
             </div>
           </div>
         </div>
+      )}
+    </div>
+  );
+};
+
+/* ── Purchase History List ────────────────────────────────────────────────── */
+
+const PurchaseHistoryList = ({ orders }) => {
+  if (!orders || orders.length === 0) return null;
+
+  const totalSpent = orders.reduce((sum, o) => sum + o.totalPrice, 0);
+  const totalItems = orders.reduce((sum, o) => sum + o.lineItems.filter(
+    (i) => !i.name.toLowerCase().includes('environmental handling fee')
+  ).length, 0);
+
+  return (
+    <div className="mt-3 space-y-3 max-w-2xl">
+
+      {/* ── Summary banner ──────────────────────────────────────────────── */}
+      <div className="rounded-xl bg-gradient-to-br from-blue-50 to-blue-100 border border-blue-200 px-5 py-4 flex items-center gap-4 shadow-sm">
+        <div className="w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center flex-shrink-0">
+          <ShoppingBag className="w-5 h-5 text-white" />
+        </div>
+        <div className="flex-1">
+          <p className="text-blue-400 text-xs font-medium uppercase tracking-wider">Purchase History</p>
+          <p className="text-blue-900 font-bold text-base leading-tight">
+            {orders.length} {orders.length === 1 ? 'Order' : 'Orders'} · {totalItems} Items
+          </p>
+        </div>
+        <div className="text-right">
+          <p className="text-blue-400 text-xs">Total Spent</p>
+          <p className="text-blue-900 font-bold text-lg">${totalSpent.toFixed(2)}</p>
+        </div>
+      </div>
+
+      {/* ── Order cards ─────────────────────────────────────────────────── */}
+      {orders.map((order, index) => (
+        <OrderCard key={order.orderNumber} order={order} index={index} />
       ))}
     </div>
   );

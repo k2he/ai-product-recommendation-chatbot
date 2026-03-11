@@ -70,6 +70,9 @@ class DataLoader:
         if product_url and not product_url.startswith("http"):
             product_url = f"{BESTBUY_URL_PREFIX}{product_url}"
 
+        # Use highResImage if present; fall back to thumbnailImage if not.
+        high_res_image = raw.get("highResImage") or raw.get("thumbnailImage") or None
+
         return {
             "sku": str(raw.get("sku", "")),
             "name": raw.get("name", ""),
@@ -80,7 +83,7 @@ class DataLoader:
             "salePrice": sale_price,
             "categoryName": raw.get("categoryName", ""),
             "isOnSale": is_on_sale,
-            "highResImage": raw.get("highResImage") or None,
+            "highResImage": high_res_image,
         }
 
     @staticmethod

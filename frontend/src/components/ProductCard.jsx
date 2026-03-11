@@ -1,5 +1,5 @@
 import React from 'react';
-import { ShoppingCart, Mail, Tag, Star, ExternalLink } from 'lucide-react';
+import { ShoppingCart, Mail, Tag, Star, ExternalLink, Barcode } from 'lucide-react';
 
 const ProductCard = ({ product, onPurchase, onEmail, loading }) => {
   // Render filled/half/empty stars for customerRating
@@ -65,6 +65,15 @@ const ProductCard = ({ product, onPurchase, onEmail, loading }) => {
         <h3 className="text-sm font-semibold text-gray-900 mb-1 line-clamp-2 leading-snug">
           {product.name}
         </h3>
+
+        {/* SKU */}
+        <div className="flex items-center gap-1.5 mb-1.5">
+{/*           <Barcode className="w-3.5 h-3.5 text-gray-400 flex-shrink-0" /> */}
+          <span className="text-xs text-gray-400">SKU: </span>
+          <span className="text-xs font-mono font-medium text-gray-600 select-all">
+            {product.sku}
+          </span>
+        </div>
 
         {/* Category */}
         <div className="flex items-center gap-1.5 mb-2">
